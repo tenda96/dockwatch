@@ -1,0 +1,180 @@
+name: Sync main and build patched Dockwatch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "20 5 * * *"
+  push:
+    branches:
+      - telegram-topic-support-main
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+
+env:
+  CUSTOM_BRANCH: telegram-topic-support-main
+  UPSTREAM_REPO: https://github.com/Notifiarr/dockwatch.git
+  UPSTREAM_BRANCH: main
+  IMAGE_NAME: ghcr.io/tenda96/dockwatch-telegram-topic
+
+jobs:
+  sync-watch-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout patched branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CUSTOM_BRANCH }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "${UPSTREAM_REPO}" || true
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Check if upstream already supports Telegram topics
+        id: upstream_check
+        run: |
+          mkdir -p /tmp/upstream-check
+
+          git show upstream/${UPSTREAM_BRANCH}:root/app/www/public/classes/traits/Notifications/Telegram.php > /tmp/upstream-check/Telegram.php || true
+          git show upstream/${UPSTREAM_BRANCH}:root/app/www/public/classes/Notifications.php > /tmp/upstream-check/Notifications.php || true
+
+          HAS_MESSAGE_THREAD_ID="false"
+          HAS_MESSAGE_THREAD_PARAM="false"
+          HAS_MULTI_PLATFORM_NOTIFY_FIX="false"
+
+          if grep -q "message_thread_id" /tmp/upstream-check/Telegram.php; then
+            HAS_MESSAGE_THREAD_ID="true"
+          fi
+
+          if grep -q "messageThreadId" /tmp/upstream-check/Telegram.php /tmp/upstream-check/Notifications.php; then
+            HAS_MESSAGE_THREAD_PARAM="true"
+          fi
+
+          if ! grep -q "return \$this->telegram" /tmp/upstream-check/Notifications.php && ! grep -q "return \$this->mattermost" /tmp/upstream-check/Notifications.php; then
+            HAS_MULTI_PLATFORM_NOTIFY_FIX="true"
+          fi
+
+          echo "has_message_thread_id=${HAS_MESSAGE_THREAD_ID}" >> "$GITHUB_OUTPUT"
+          echo "has_message_thread_param=${HAS_MESSAGE_THREAD_PARAM}" >> "$GITHUB_OUTPUT"
+          echo "has_multi_platform_notify_fix=${HAS_MULTI_PLATFORM_NOTIFY_FIX}" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue if upstream may include Telegram topic support
+        if: steps.upstream_check.outputs.has_message_thread_id == 'true' || steps.upstream_check.outputs.has_message_thread_param == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "upstream-watch" \
+            --repo "${{ github.repository }}" \
+            --color "0969DA" \
+            --description "Automated upstream monitoring" || true
+
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --label "upstream-watch" \
+            --search "Telegram topic support upstream" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -z "$existing" ]; then
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --label "upstream-watch" \
+              --title "Telegram topic support upstream may now be available" \
+              --body "The upstream Dockwatch main branch appears to contain Telegram topic/thread support.
+
+Detected:
+- message_thread_id: ${{ steps.upstream_check.outputs.has_message_thread_id }}
+- messageThreadId parameter: ${{ steps.upstream_check.outputs.has_message_thread_param }}
+- multi-platform notify fix: ${{ steps.upstream_check.outputs.has_multi_platform_notify_fix }}
+
+Suggested checks:
+1. Compare upstream Telegram.php with our patched Telegram.php.
+2. Compare upstream Notifications.php with our patched Notifications.php.
+3. Check whether upstream added a migration/config field for messageThreadId.
+4. If upstream has everything, remove the local patch and switch back to the official image."
+          fi
+
+      - name: Merge upstream main into patched branch
+        id: merge
+        continue-on-error: true
+        run: |
+          git merge --no-edit upstream/${UPSTREAM_BRANCH}
+
+      - name: Open issue if upstream merge failed
+        if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git merge --abort || true
+
+          gh label create "upstream-watch" \
+            --repo "${{ github.repository }}" \
+            --color "0969DA" \
+            --description "Automated upstream monitoring" || true
+
+          existing=$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --state open \
+            --label "upstream-watch" \
+            --search "Manual upstream merge needed" \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -z "$existing" ]; then
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --label "upstream-watch" \
+              --title "Manual upstream merge needed for telegram-topic-support-main" \
+              --body "The scheduled workflow could not automatically merge upstream/main into telegram-topic-support-main.
+
+This probably means upstream changed one of the patched files.
+
+Files to check:
+- root/app/www/public/classes/traits/Notifications/Telegram.php
+- root/app/www/public/classes/Notifications.php
+- root/app/www/public/migrations/023_telegram_thread_id.php
+
+Action needed:
+1. Open the failed workflow run.
+2. Check the merge conflict.
+3. Manually merge upstream changes into telegram-topic-support-main.
+4. Re-run this workflow."
+          fi
+
+          exit 1
+
+      - name: Push merged upstream changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git push origin HEAD:${CUSTOM_BRANCH}
+          else
+            echo "No upstream changes to push."
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push patched image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
