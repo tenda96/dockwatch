@@ -9,7 +9,7 @@
 
 trait Telegram
 {
-    public function telegram($logfile, $botToken, $chatId, $payload, $test = false)
+    public function telegram($logfile, $botToken, $chatId, $messageThreadId, $payload, $test = false)
     {
         if (!$botToken) {
             return ['code' => 400, 'error' => 'Missing bot token'];
@@ -20,7 +20,16 @@ trait Telegram
 
         $message = $this->buildTelegramMessage($payload, $test);
         $url     = 'https://api.telegram.org/bot%s/sendMessage';
-        $payload = ['chat_id' => $chatId, 'text' => $message, 'parse_mode' => 'MarkdownV2', 'disable_web_page_preview' => true];
+        $payload = [
+            'chat_id' => $chatId,
+            'text' => $message,
+            'parse_mode' => 'MarkdownV2',
+            'disable_web_page_preview' => true,
+        ];
+        
+        if (trim((string) $messageThreadId) !== '') {
+            $payload['message_thread_id'] = (int) trim($messageThreadId);
+        }
         $url     = sprintf($url, $botToken);
         $curl    = curl($url, [], 'POST', json_encode($payload));
 
