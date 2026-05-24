@@ -87,22 +87,26 @@ jobs:
             --jq '.[0].number // empty')
 
           if [ -z "$existing" ]; then
+            cat > /tmp/upstream-topic-issue.md <<EOF
+          The upstream Dockwatch main branch appears to contain Telegram topic/thread support.
+
+          Detected:
+          - message_thread_id: ${{ steps.upstream_check.outputs.has_message_thread_id }}
+          - messageThreadId parameter: ${{ steps.upstream_check.outputs.has_message_thread_param }}
+          - multi-platform notify fix: ${{ steps.upstream_check.outputs.has_multi_platform_notify_fix }}
+
+          Suggested checks:
+          1. Compare upstream Telegram.php with our patched Telegram.php.
+          2. Compare upstream Notifications.php with our patched Notifications.php.
+          3. Check whether upstream added a migration/config field for messageThreadId.
+          4. If upstream has everything, remove the local patch and switch back to the official image.
+          EOF
+
             gh issue create \
               --repo "${{ github.repository }}" \
               --label "upstream-watch" \
               --title "Telegram topic support upstream may now be available" \
-              --body "The upstream Dockwatch main branch appears to contain Telegram topic/thread support.
-
-Detected:
-- message_thread_id: ${{ steps.upstream_check.outputs.has_message_thread_id }}
-- messageThreadId parameter: ${{ steps.upstream_check.outputs.has_message_thread_param }}
-- multi-platform notify fix: ${{ steps.upstream_check.outputs.has_multi_platform_notify_fix }}
-
-Suggested checks:
-1. Compare upstream Telegram.php with our patched Telegram.php.
-2. Compare upstream Notifications.php with our patched Notifications.php.
-3. Check whether upstream added a migration/config field for messageThreadId.
-4. If upstream has everything, remove the local patch and switch back to the official image."
+              --body-file /tmp/upstream-topic-issue.md
           fi
 
       - name: Merge upstream main into patched branch
@@ -132,24 +136,28 @@ Suggested checks:
             --jq '.[0].number // empty')
 
           if [ -z "$existing" ]; then
+            cat > /tmp/merge-failed-issue.md <<EOF
+          The scheduled workflow could not automatically merge upstream/main into telegram-topic-support-main.
+
+          This probably means upstream changed one of the patched files.
+
+          Files to check:
+          - root/app/www/public/classes/traits/Notifications/Telegram.php
+          - root/app/www/public/classes/Notifications.php
+          - root/app/www/public/migrations/023_telegram_thread_id.php
+
+          Action needed:
+          1. Open the failed workflow run.
+          2. Check the merge conflict.
+          3. Manually merge upstream changes into telegram-topic-support-main.
+          4. Re-run this workflow.
+          EOF
+
             gh issue create \
               --repo "${{ github.repository }}" \
               --label "upstream-watch" \
               --title "Manual upstream merge needed for telegram-topic-support-main" \
-              --body "The scheduled workflow could not automatically merge upstream/main into telegram-topic-support-main.
-
-This probably means upstream changed one of the patched files.
-
-Files to check:
-- root/app/www/public/classes/traits/Notifications/Telegram.php
-- root/app/www/public/classes/Notifications.php
-- root/app/www/public/migrations/023_telegram_thread_id.php
-
-Action needed:
-1. Open the failed workflow run.
-2. Check the merge conflict.
-3. Manually merge upstream changes into telegram-topic-support-main.
-4. Re-run this workflow."
+              --body-file /tmp/merge-failed-issue.md
           fi
 
           exit 1
