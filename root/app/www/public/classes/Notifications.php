@@ -42,8 +42,8 @@ class Notifications
 
     public function sendTestNotification($linkId, $name)
     {
-        $linkIds                   = [];
-        $return                    = $notificationLinkData = '';
+        $return                    = '';
+        $notificationLinkData      = null;
         $tests                     = $this->getTestPayloads();
         $notificationPlatformTable = $this->database->getNotificationPlatforms();
         $notificationLinkTable     = $this->database->getNotificationLinks();
@@ -55,21 +55,31 @@ class Notifications
             }
         }
 
-        $notificationPlatform = $notificationPlatformTable[$notificationLinkData['platform']];
+        $platformId = $notificationLinkData['platform_id'] ?? $notificationLinkData['platform'] ?? null;
+        $notificationPlatform = null;
 
-        $logfile = $this->logpath . $notificationPlatform['platform'] . '.log';
-        logger($logfile, 'test notification request to ' . $notificationPlatform['platform']);
+        foreach ($notificationPlatformTable as $platform) {
+            if ($platform['id'] == $platformId) {
+                $notificationPlatform = $platform;
+                break;
+            }
+        }
+
+        $platformName = $notificationPlatform['platform'] ?? 'Unknown';
+
+        $logfile = $this->logpath . $platformName . '.log';
+        logger($logfile, 'test notification request to ' . $platformName);
         logger($logfile, 'test=' . $name);
         logger($logfile, 'tests=' . json_encode($tests));
         logger($logfile, 'test payload=' . json_encode($tests[$name]));
 
         $result = $this->notify($linkId, $name, $tests[$name], true);
 
-        if ($result['code'] != 200) {
-            $return = 'Code ' . $result['code'] . ', ' . $result['error'];
+        if (($result['code'] ?? 200) != 200) {
+            $return = 'Code ' . ($result['code'] ?? '') . ', ' . ($result['error'] ?? '');
         }
 
-        return ['code' => $result['code'], 'result' => $return];
+        return ['code' => $result['code'] ?? 200, 'result' => $return];
     }
 
     public function notify($linkId, $trigger, $payload, $test = false)
@@ -97,9 +107,6 @@ class Notifications
                     $linkIds[] = $notificationLink;
                 }
             }
-
-            $notificationLink     = $notificationLinkTable[$linkId];
-            $notificationPlatform = $notificationPlatformTable[$notificationLink['platform']];
         } else {
             foreach ($notificationTriggersTable as $notificationTrigger) {
                 if ($notificationTrigger['name'] == $trigger) {
@@ -120,8 +127,8 @@ class Notifications
         $results = [];
 
         foreach ($linkIds as $linkId) {
-            $platformId         = $linkId['platform'];
-            $platformParameters = json_decode($linkId['platform_parameters'], true);
+            $platformId         = $linkId['platform_id'] ?? $linkId['platform'] ?? null;
+            $platformParameters = json_decode($linkId['platform_parameters'], true) ?: [];
             $platformName       = '';
 
             foreach ($notificationPlatformTable as $notificationPlatform) {
@@ -131,7 +138,12 @@ class Notifications
                 }
             }
 
+            if (!$platformName) {
+                continue;
+            }
+
             $logfile = $this->logpath . $platformName . '.log';
+
             logger($logfile, 'notification request to ' . $platformName);
             logger($logfile, 'notification payload: ' . json_encode($payload));
 
