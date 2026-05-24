@@ -54,6 +54,7 @@ class Notifications
                 break;
             }
         }
+
         $notificationPlatform = $notificationPlatformTable[$notificationLinkData['platform']];
 
         $logfile = $this->logpath . $notificationPlatform['platform'] . '.log';
@@ -105,8 +106,8 @@ class Notifications
                     foreach ($notificationLinkTable as $notificationLink) {
                         $triggers = makeArray(json_decode($notificationLink['trigger_ids'], true));
 
-                        foreach ($triggers as $trigger) {
-                            if ($trigger == $notificationTrigger['id']) {
+                        foreach ($triggers as $triggerId) {
+                            if ($triggerId == $notificationTrigger['id']) {
                                 $linkIds[] = $notificationLink;
                             }
                         }
@@ -115,6 +116,8 @@ class Notifications
                 }
             }
         }
+
+        $results = [];
 
         foreach ($linkIds as $linkId) {
             $platformId         = $linkId['platform'];
@@ -134,9 +137,16 @@ class Notifications
 
             switch ($platformId) {
                 case NotificationPlatforms::NOTIFIARR:
-                    return $this->notifiarr($logfile, $platformParameters['apikey'], $payload, $test);
+                    $results[] = $this->notifiarr(
+                        $logfile,
+                        $platformParameters['apikey'],
+                        $payload,
+                        $test
+                    );
+                    break;
+
                 case NotificationPlatforms::TELEGRAM:
-                    return $this->telegram(
+                    $results[] = $this->telegram(
                         $logfile,
                         $platformParameters['botToken'],
                         $platformParameters['chatId'],
@@ -144,10 +154,27 @@ class Notifications
                         $payload,
                         $test
                     );
+                    break;
+
                 case NotificationPlatforms::MATTERMOST:
-                    return $this->mattermost($logfile, $platformParameters['url'], $payload, $test, $platformParameters['username']);
+                    $results[] = $this->mattermost(
+                        $logfile,
+                        $platformParameters['url'],
+                        $payload,
+                        $test,
+                        $platformParameters['username'] ?? null
+                    );
+                    break;
             }
         }
+
+        foreach ($results as $result) {
+            if (($result['code'] ?? 200) != 200) {
+                return $result;
+            }
+        }
+
+        return end($results) ?: ['code' => 200, 'result' => ''];
     }
 
     public function getNotificationPlatformNameFromId($id, $platforms)
@@ -157,6 +184,8 @@ class Notifications
                 return $platform['platform'];
             }
         }
+
+        return '';
     }
 
     public function getNotificationTriggerNameFromId($id, $triggers)
@@ -166,5 +195,7 @@ class Notifications
                 return $trigger['label'];
             }
         }
+
+        return '';
     }
 }
