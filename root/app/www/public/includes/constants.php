@@ -8,11 +8,11 @@
 */
 
 define('APP_NAME', 'Dockwatch');
-define('APP_IMAGE', 'ghcr.io/notifiarr/dockwatch:main');
+define('APP_IMAGE', 'ghcr.io/tenda96/dockwatch-telegram-topic:latest');
 define('APP_PORT', 9999);
 define('APP_SERVER_ID', 1);
 define('APP_SERVER_URL', 'http://localhost');
-define('APP_MAINTENANCE_IMAGE', 'ghcr.io/notifiarr/dockwatch:develop');
+define('APP_MAINTENANCE_IMAGE', 'ghcr.io/tenda96/dockwatch-telegram-topic:latest');
 define('APP_MAINTENANCE_PORT', 9998);
 define('APP_WEBSOCKET_PORT', 9910);
 define('APP_BACKUPS', 7); //-- DAYS
