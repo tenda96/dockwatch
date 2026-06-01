@@ -32,12 +32,55 @@ function loadClassExtras($class)
 
 function isDockwatchContainer($container)
 {
-    $imageMatch = str_replace(':main', '', APP_IMAGE);
-    if (str_contains($container['inspect'][0]['Config']['Image'], $imageMatch) && $container['Names'] != 'dockwatch-maintenance') {
-        return true;
+    $containerName = ltrim($container['Names'] ?? $container['name'] ?? '', '/');
+
+    if ($containerName === 'dockwatch-maintenance') {
+        return false;
     }
-    if (str_contains($container['image'], $imageMatch) && $container['name'] != 'dockwatch-maintenance') {
-        return true;
+
+    // Most reliable check: compare with the actual running Dockwatch container name.
+    try {
+        $currentDockwatchName = ltrim(getDockwatchContainerName(), '/');
+
+        if ($currentDockwatchName && $containerName === $currentDockwatchName) {
+            return true;
+        }
+    } catch (Throwable $e) {
+        // Fallback to image matching below.
+    }
+
+    $images = [
+        $container['inspect'][0]['Config']['Image'] ?? '',
+        $container['image'] ?? '',
+    ];
+
+    $imageMatches = [];
+
+    foreach ([APP_IMAGE, APP_MAINTENANCE_IMAGE] as $appImage) {
+        if (!$appImage) {
+            continue;
+        }
+
+        $imageMatches[] = $appImage;
+        $imageMatches[] = preg_replace('/:[^\/]+$/', '', $appImage);
+    }
+
+    // Fork fallback.
+    $imageMatches[] = 'ghcr.io/tenda96/dockwatch-telegram-topic';
+    $imageMatches[] = 'dockwatch-telegram-topic';
+
+    // Upstream fallback.
+    $imageMatches[] = 'ghcr.io/notifiarr/dockwatch';
+    $imageMatches[] = 'notifiarr/dockwatch';
+
+    $imageMatches = array_filter(array_unique($imageMatches));
+
+    foreach ($images as $image) {
+        foreach ($imageMatches as $match) {
+            if ($match && str_contains($image, $match)) {
+                return true;
+            }
+        }
     }
 
     return false;
