@@ -45,21 +45,24 @@ class Maintenance
         $this->maintenanceIP    = $settingsTable['maintenanceIP'];
         $getExpandedProcessList = getExpandedProcessList(true, true, true, true);
         $this->processList      = is_array($getExpandedProcessList['processList']) ? $getExpandedProcessList['processList'] : [];
-        $imageMatch             = str_replace(':main', '', APP_IMAGE);
 
         logger(MAINTENANCE_LOG, 'Process list: ' . count($this->processList) . ' containers');
-
+        
         foreach ($this->processList as $process) {
-            logger(MAINTENANCE_LOG, 'Checking \'' . $process['inspect'][0]['Config']['Image'] . '\' contains \'' . $imageMatch . '\'');
-
-            if (str_contains($process['inspect'][0]['Config']['Image'], $imageMatch) && $process['Names'] != $this->maintenanceContainerName) {
+            $processName  = ltrim($process['Names'] ?? $process['name'] ?? '', '/');
+            $processImage = $process['inspect'][0]['Config']['Image'] ?? $process['image'] ?? '';
+        
+            logger(MAINTENANCE_LOG, 'Checking container \'' . $processName . '\' image \'' . $processImage . '\'');
+        
+            if ($processName === $this->maintenanceContainerName) {
+                $this->maintenanceContainer = $process;
+                continue;
+            }
+        
+            if (isDockwatchContainer($process)) {
                 $this->hostContainer = $process;
             }
-
-            if ($process['Names'] == $this->maintenanceContainerName) {
-                $this->maintenanceContainer = $process;
-            }
-
+        
             if ($this->hostContainer && $this->maintenanceContainer) {
                 break;
             }
