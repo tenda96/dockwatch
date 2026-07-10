@@ -18,17 +18,23 @@ trait Telegram
             return ['code' => 400, 'error' => 'Missing chat id'];
         }
 
-        $message = $this->buildTelegramMessage($payload, $test);
-        $url     = 'https://api.telegram.org/bot%s/sendMessage';
-        $payload = [
+        $messageThreadId = trim((string) $messageThreadId);
+
+        if ($messageThreadId !== '' && (!ctype_digit($messageThreadId) || (int) $messageThreadId <= 0)) {
+            return ['code' => 400, 'error' => 'Invalid message thread id'];
+        }
+
+        $message        = $this->buildTelegramMessage($payload, $test);
+        $url            = 'https://api.telegram.org/bot%s/sendMessage';
+        $payload        = [
             'chat_id' => $chatId,
             'text' => $message,
             'parse_mode' => 'MarkdownV2',
             'disable_web_page_preview' => true,
         ];
-        
-        if (trim((string) $messageThreadId) !== '') {
-            $payload['message_thread_id'] = (int) trim($messageThreadId);
+
+        if ($messageThreadId !== '') {
+            $payload['message_thread_id'] = (int) $messageThreadId;
         }
         $url     = sprintf($url, $botToken);
         $curl    = curl($url, [], 'POST', json_encode($payload));
