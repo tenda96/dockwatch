@@ -11,9 +11,9 @@ define('APP_NAME', 'Dockwatch');
 define('APP_IMAGE', 'ghcr.io/tenda96/dockwatch-telegram-topic:latest');
 define('APP_PORT', 9999);
 define('APP_SERVER_ID', 1);
-define('APP_SERVER_URL', 'http://localhost');
 define('APP_MAINTENANCE_IMAGE', 'ghcr.io/tenda96/dockwatch-telegram-topic:latest');
 define('APP_MAINTENANCE_PORT', 9998);
+
 define('APP_WEBSOCKET_PORT', 9910);
 define('APP_BACKUPS', 7); //-- DAYS
 define('APP_X', 0);
@@ -28,7 +28,12 @@ define('DEFAULT_REMOTE_SERVER_TIMEOUT', 20);
 define('TELEMETRY_URL', 'https://notifiarr.com/api/v1/system/dockwatch-telemetry/dockwatc-htel-emet-ryen-dpoint-2024-'); //-- THIS APIKEY HAS BEEN HARDCODED TO ONLY WORK ON THIS ENDPOINT
 
 //-- DATABASE
+// TODO: WAIT A FEW MONTHS FOR EXISTING USERS TO MIGRATE, REMOVE "DATABASE_NAME" REFERENCE
 define('DATABASE_NAME', 'dockwatch.db');
+define('DB_NAME', 'dockwatch');
+define('DB_USER', 'abc');
+define('DB_PASSWORD', 'abc');
+define('DB_HOST', 'localhost');
 define('SETTINGS_TABLE', 'settings');
 define('SERVERS_TABLE', 'servers');
 define('CONTAINER_SETTINGS_TABLE', 'container_settings');
@@ -37,6 +42,10 @@ define('CONTAINER_GROUPS_LINK_TABLE', 'container_group_link');
 define('NOTIFICATION_PLATFORM_TABLE', 'notification_platform');
 define('NOTIFICATION_TRIGGER_TABLE', 'notification_trigger');
 define('NOTIFICATION_LINK_TABLE', 'notification_link');
+define('USERS_TABLE', 'users');
+define('INTRUSION_HISTORY_TABLE', 'intrusion_history');
+define('SECURITY_SCANS_TABLE', 'security_scans');
+define('VERSION_TABLE', 'version');
 define('CONTAINER_CLEANUP_TIME', 14); //-- DAYS
 
 //-- CRON
@@ -44,6 +53,7 @@ define('DEFAULT_CRON', '0 0 * * *');
 define('DEFAULT_STATE_CRON_TIME', 5);
 
 //-- FOLDERS
+define('SYSTEM_TMP', '/tmp/');
 define('APP_DATA_PATH', '/config/');
 define('BACKUP_PATH', APP_DATA_PATH . 'backups/');
 define('LOGS_PATH', APP_DATA_PATH . 'logs/');
@@ -52,7 +62,6 @@ define('COMPOSE_PATH', APP_DATA_PATH . 'compose/');
 define('DATABASE_PATH', APP_DATA_PATH . 'database/');
 define('MIGRATIONS_PATH', ABSOLUTE_PATH . 'migrations/');
 define('SECURITY_PATH', APP_DATA_PATH . 'security/');
-
 
 //-- DATA FILES
 define('SERVERS_FILE', APP_DATA_PATH . 'servers.json');
@@ -71,7 +80,7 @@ define('SSE_FILE', APP_DATA_PATH . 'sse.json');
 define('METRICS_FILE', APP_DATA_PATH . 'metrics.json');
 define('COMMANDS_FILE', APP_DATA_PATH . 'commands.json');
 define('BASE_URL_FILE', APP_DATA_PATH . 'base-url.txt');
-define('MIGRATION_FILE', APP_DATA_PATH . 'migration-in-progress.txt');
+define('MIGRATION_FILE', APP_DATA_PATH . '.migration-running');
 define('DOWNLOAD_SCANNERS_FILE', APP_DATA_PATH . '.download-scanners');
 define('IS_MIGRATION_RUNNING', file_exists(MIGRATION_FILE));
 
@@ -79,6 +88,7 @@ define('IS_MIGRATION_RUNNING', file_exists(MIGRATION_FILE));
 define('SYSTEM_LOG', LOGS_PATH . 'system/app.log');
 define('UI_LOG', LOGS_PATH . 'system/ui.log');
 define('API_LOG', LOGS_PATH . 'system/api.log');
+define('INTRUSION_LOG', LOGS_PATH . 'system/intrusion.log');
 define('MAINTENANCE_LOG', LOGS_PATH . 'system/maintenance.log');
 define('STARTUP_LOG', LOGS_PATH . 'system/startup.log');
 define('MIGRATION_LOG', LOGS_PATH . 'system/migrations.log');
@@ -93,13 +103,16 @@ define('CRON_HEALTH_LOG', LOGS_PATH . 'crons/health.log');
 define('CRON_SSE_LOG', LOGS_PATH . 'crons/sse.log');
 define('CRON_SECURITY_LOG', LOGS_PATH . 'crons/security.log');
 define('LOG_ROTATE_SIZE', 2); //-- MB UNTIL ROTATE
+define('LOG_LEVEL_INFO', 0);
+define('LOG_LEVEL_DEBUG', 1);
 
 //-- MEMCACHE
 define('MEMCACHE_HOST', '127.0.0.1');
 define('MEMCACHE_PORT', 11211);
 define('MEMCACHE_PREFIX', 'dockwatch-');
+define('MEMCACHE_WS_TOKEN_TIME', 300);
 define('MEMCACHE_SHELL_TOKEN_KEY', (MEMCACHE_PREFIX . 'shell-%s'));
-define('MEMCACHE_SHELL_TOKEN_TIME', 300);
+define('MEMCACHE_COMPOSE_TOKEN_KEY', (MEMCACHE_PREFIX . 'compose-%s'));
 define('MEMCACHE_SECURITY_VULNS_KEY', (MEMCACHE_PREFIX . 'security-vulns-%s'));
 define('MEMCACHE_SECURITY_VULNS_TIME', 300);
 define('MEMCACHE_SECURITY_VULNS_COUNT_KEY', (MEMCACHE_PREFIX . 'security-vulns-count-%s'));
@@ -110,6 +123,8 @@ define('MEMCACHE_SECURITY_SCAN_HISTORY_KEY', (MEMCACHE_PREFIX . 'security-histor
 define('MEMCACHE_SECURITY_SCAN_HISTORY_TIME', 300);
 define('MEMCACHE_SECURITY_NEW_VULNS_KEY', (MEMCACHE_PREFIX . 'security-new-vulns-%s'));
 define('MEMCACHE_SECURITY_NEW_VULNS_TIME', 300);
+define('MEMCACHE_SHELL_PATH_KEY', (MEMCACHE_PREFIX . 'shell-path-%s'));
+define('MEMCACHE_SHELL_PATH_TIME', 600);
 
 //-- REGCTL
 define('REGCTL_PATH', '/usr/local/bin/');

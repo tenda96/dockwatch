@@ -7,6 +7,9 @@
 ----------------------------------
 */
 
+//-- COMPOSER: IP VALIDATOR
+use Chialab\Ip;
+
 function loadClassExtras($class)
 {
     $extras = ['interfaces', 'traits'];
@@ -91,19 +94,40 @@ function getDockwatchContainerName()
     global $shell;
 
     if (memcacheGet('dockwatchContainerName')) {
-        return memcacheGet('dockwatchContainerName');
+        return ltrim(memcacheGet('dockwatchContainerName'), '/');
     }
 
     $hostname = trim($shell->exec('grep /etc/hostname /proc/self/mountinfo | awk -F/containers/ \'{print $2}\' | cut -d/ -f1 2>&1')); //-- RETURNS VOLUME PATH THAT MATCHES CONTAINER ID
     $cmd      = sprintf(
         "/usr/bin/docker inspect --format='{{.Name}}' %s 2>&1",
-        $shell->prepare($hostname)
+        $shell->prepare($hostname),
     );
 
     $containerName = trim($shell->exec($cmd . ' 2>&1'));
     memcacheSet('dockwatchContainerName', $containerName, 300);
 
-    return $containerName;
+    return substr($containerName, 1);
+}
+
+function getDockwatchContainerHash()
+{
+    global $shell;
+
+    if (memcacheGet('dockwatchContainerHash')) {
+        return memcacheGet('dockwatchContainerHash');
+    }
+
+    $hostname = trim($shell->exec('grep /etc/hostname /proc/self/mountinfo | awk -F/containers/ \'{print $2}\' | cut -d/ -f1 2>&1')); //-- RETURNS VOLUME PATH THAT MATCHES CONTAINER ID
+    $cmd      = sprintf(
+        "/usr/bin/docker inspect --format='{{.Image}}' %s 2>&1",
+        $shell->prepare($hostname),
+    );
+
+    $containerHash = trim($shell->exec($cmd . ' 2>&1'));
+    $containerHash = str_replace('sha256:', '', $containerHash);
+    memcacheSet('dockwatchContainerHash', $containerHash, 300);
+
+    return $containerHash;
 }
 
 function isComposeContainer($container)
@@ -311,10 +335,99 @@ function cleanTTYOutput($input)
             "\n",
             "\n",
             "\n",
-            '\\'
+            '\\',
         ],
-        $input
+        $input,
     );
 
     return $input;
+}
+
+function appServerUrl()
+{
+    $host = $_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '';
+
+    if ($host == '') {
+        return 'http://localhost';
+    }
+
+    if (str_contains($host, ':')) {
+        $parsed = parse_url('http://' . $host);
+        $host   = $parsed['host'] ?? explode(':', $host, 2)[0];
+    }
+
+    $scheme = 'http';
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] != 'off') {
+        $scheme = 'https';
+    } elseif (!empty($_SERVER['HTTP_X_FORWARDED_PROTO'])) {
+        $scheme = strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https' ? 'https' : 'http';
+    } elseif (!empty($_SERVER['REQUEST_SCHEME'])) {
+        $scheme = $_SERVER['REQUEST_SCHEME'];
+    }
+
+    return $scheme . '://' . $host;
+}
+
+function ipMatchesSubnet($ip, $ipmask)
+{
+    try {
+        $address = Ip\Address::parse($ip);
+
+        if (str_contains($ipmask, '/')) {
+            return Ip\Subnet::parse($ipmask)->contains($address);
+        }
+
+        return $address->equals(Ip\Address::parse($ipmask));
+    } catch (\InvalidArgumentException $e) {
+        return false;
+    }
+}
+
+function buildWebSocketURL($url = [])
+{
+    if (empty($url)) {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https') ? 'wss' : 'ws';
+        $host   = $_SERVER['HTTP_HOST'] ?? '';
+        if ($host === '') {
+            $host = $_SERVER['SERVER_NAME'] ?? 'localhost';
+            $port = $_SERVER['SERVER_PORT'] ?? '';
+            $host = $port ? $host . ':' . $port : $host;
+        }
+
+        $basePath = rtrim($_SERVER['BASE_URL'] ?? '', '/');
+        $url      = $scheme . '://' . $host . $basePath . '/ws';
+    }
+
+    return $url;
+}
+
+//-- ISSUE A SINGLE-USE WEBSOCKET CHANNEL TOKEN AND RETURN THE CONNECT URL
+function createWebSocketSession($keyFormat, $id, $query)
+{
+    global $memcache, $settingsTable;
+
+    $response = ['url' => '', 'token' => '', 'error' => ''];
+
+    //-- GENERATE A SINGLE-USE TOKEN FOR THIS CHANNEL SESSION
+    $token = bin2hex(random_bytes(32));
+    $key   = sprintf($keyFormat, $id);
+
+    $tokens = [];
+    if ($memcache) {
+        $existing = $memcache->get($key);
+        $tokens   = is_array($existing) ? $existing : [];
+    }
+
+    $tokens[] = $token;
+    $tokens   = array_slice(array_values($tokens), -20); //-- CAP TO AVOID UNBOUNDED GROWTH
+    $stored   = $memcache ? $memcache->set($key, $tokens, MEMCACHE_WS_TOKEN_TIME) : false;
+
+    $response['url']   = buildWebSocketURL($settingsTable['websocketUrl'] ?? []) . $query;
+    $response['token'] = $token;
+
+    if (!$stored) {
+        $response['error'] = 'Unable to store token';
+    }
+
+    return $response;
 }

@@ -38,6 +38,27 @@ a {
     z-index: 99;
 }
 
+.header-login {
+    padding: 0 1rem;
+}
+
+.header-login-logo {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-weight: 700;
+    color: var(--bs-body-color);
+}
+
+.header-login-logo img {
+    height: 2.25rem;
+    width: auto;
+}
+
+body.login-page {
+    padding-left: 1rem;
+}
+
 #nav-bar {
     background-color: var(--bs-primary);
 }
@@ -138,9 +159,17 @@ a {
         margin: calc(var(--header-height) + 1rem) 0 0 0;
         padding-left: calc(var(--nav-width) + 2rem);
     }
+    body.login-page {
+        margin: var(--header-height) 0 0 0;
+        padding-left: 1rem;
+    }
     .header {
         height: calc(var(--header-height) + 1rem);
         padding: 0 2rem 0 calc(var(--nav-width) + 2rem);
+    }
+    .header-login {
+        height: var(--header-height);
+        padding: 0 2rem;
     }
     .header_img {
         width: 40px;
@@ -693,14 +722,25 @@ tr.container-group-row .container-group-label {
 #security-table td a:hover {
     text-decoration: underline;
 }
-#security-table .small-text {
-    font-size: 0.85rem;
+#security-table .small-text,
+#security-table .security-history-toggle {
+    font-size: 11px !important;
+    font-weight: normal !important;
 }
 #security-table .badge {
     font-size: 0.9rem;
 }
-.security-expand {
-    font-size: 1.1rem;
+#security-table .security-history-toggle {
+    cursor: pointer;
+    display: inline-block;
+    margin-top: 0.15rem;
+}
+#security-table .security-history-toggle.text-info {
+    color: var(--primary-500) !important;
+}
+#security-table .security-history-toggle:hover,
+#security-table .security-history-toggle.security-history-open {
+    text-decoration: underline;
 }
 .security-download-db {
     font-size: 1rem;
@@ -726,4 +766,18 @@ tr.container-group-row .container-group-label {
 #securityModal .modal-body {
     max-height: 70vh;
     overflow-x: auto;
+}
+.compose-placeholder {
+    position: absolute;
+    top: 6px;
+    left: 50px;
+    right: 12px;
+    z-index: 5;
+    overflow: hidden;
+    pointer-events: none;
+    white-space: pre-wrap;
+    color: #868e96;
+    font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.5;
 }

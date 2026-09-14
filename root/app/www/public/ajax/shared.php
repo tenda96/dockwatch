@@ -18,11 +18,37 @@ if (file_exists('../../loader.php')) {
 }
 require ABSOLUTE_PATH . 'loader.php';
 
+maintenanceGate(503, 'Maintenance container: the UI is not available', false);
+
+$ajaxFile    = basename($_SERVER['PHP_SELF'] ?? '', '.php');
+$ajaxMethod  = $_POST['m'] ?? '';
+$isLoginAjax = $ajaxFile == 'login' && str_equals_any($ajaxMethod, ['login', 'logout', 'resetSession']);
+
+if (USE_AUTH && !$isLoginAjax && empty($_SESSION['authenticated'])) {
+    http_response_code(401);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Unauthorized']);
+    exit;
+}
+
 if (!str_contains_any($_SERVER['PHP_SELF'], ['/api/']) && !str_contains($_SERVER['PWD'], 'oneshot')) {
-    if (!$_SESSION['IN_DOCKWATCH']) {
+    if (!$isLoginAjax && !$_SESSION['IN_DOCKWATCH']) {
+        recordIntrusion('direct_access', ['path' => $_SERVER['PHP_SELF'] ?? '']);
         http_response_code(400);
         exit('Error: You should use the UI, its much prettier.');
     }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    enforceCsrfToken();
+}
+
+if ($_POST['m'] == 'removeMigrationFile') {
+    if (file_exists(MIGRATION_FILE)) {
+        deleteFile(MIGRATION_FILE);
+    }
+
+    exit;
 }
 
 $ajaxFile = basename(debug_backtrace()[0]['file'], '.php');
@@ -51,9 +77,7 @@ if (IS_MIGRATION_RUNNING) {
         <div class="text-start mt-5">
             <h5>Other options...</h5>
             <ul>
-                <li>You can stop <?= APP_NAME ?>, replace the database file in <code><?= DATABASE_PATH . DATABASE_NAME ?></code> with one from <code><?= BACKUP_PATH . '&lt;date&gt;/' . DATABASE_NAME ?></code> and refresh to try again</li>
-                <li>You can remove the tmp file <code><?= MIGRATION_FILE ?></code> to gain access back to the UI but this is not advised</li>
-                <li>You can delete <code><?= DATABASE_PATH . DATABASE_NAME ?></code> and refresh the page to try and re-run all the migrations but this is also not advised</li>
+                <li>You can remove the tmp file <code style="cursor: pointer;" onclick="removeMigrationFile()"><?= htmlspecialchars((string) MIGRATION_FILE, ENT_QUOTES, 'UTF-8') ?></code> to gain access back to the UI but this is not advised</li>
             </ul>
         </div>
     </div>

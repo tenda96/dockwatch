@@ -82,8 +82,22 @@ function purgeLogs($group)
 
 function logger($logfile, $msg, $type = 'info')
 {
+    global $settingsTable;
+
     if (!$logfile) {
         return;
+    }
+
+    if ($type == 'debug' && $settingsTable['logLevel'] != LOG_LEVEL_DEBUG) {
+        return;
+    }
+
+    //-- OUTPUT THE LINE TO THE SHELL
+    if ($type == 'shell') {
+        if (IS_STARTUP) {
+            echo $msg . "\n";
+        }
+        $type = '';
     }
 
     $backtrace  = debug_backtrace();
@@ -91,16 +105,39 @@ function logger($logfile, $msg, $type = 'info')
     $file       = $backtrace[0]['file'];
     $fileParts  = explode('/', $file);
     $fileName   = $fileParts[count($fileParts) - 1];
-    $fileFolder = $fileParts[count($fileParts) - 2];
+    $fileFolder = $fileParts[count($fileParts) - 2] ?? '';
     $file       = ($fileFolder != 'www' && $fileFolder != 'public' ? $fileFolder . '/' : '') . $fileName;
     $log        = date('Y-m-d g:i:s') . ' ' . ($type ? '[' . strtoupper($type) . '] ' : '') . $file . ' LN: ' . $line . ' :: ' . (is_array($msg) || is_object($msg) ? loggerLoopArray($msg, 0) : $msg) . "\n";
 
-    file_put_contents($logfile, $log, FILE_APPEND);
+    $logDir = dirname($logfile);
+    createDirectoryTree($logDir);
+
+    $fp = fopen($logfile, 'ab');
+    if (!$fp) {
+        return;
+    }
+
+    flock($fp, LOCK_EX);
+    fwrite($fp, $log);
+    fflush($fp);
 
     $rotateSize = LOG_ROTATE_SIZE * pow(1024, 2);
     if (filesize($logfile) >= $rotateSize) {
-        $rotated = str_replace('.log', '-' . time() . '.log', $logfile);
-        rename($logfile, $rotated);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+
+        $suffix        = time() . '-' . getmypid();
+        $rotateAttempt = 0;
+        while (file_exists($logfile)) {
+            $rotated = preg_replace('/\.log$/', '-' . $suffix . ($rotateAttempt ? '-' . $rotateAttempt : '') . '.log', $logfile);
+            if (!file_exists($rotated) && rename($logfile, $rotated)) {
+                break;
+            }
+            $rotateAttempt++;
+        }
+    } else {
+        flock($fp, LOCK_UN);
+        fclose($fp);
     }
 }
 

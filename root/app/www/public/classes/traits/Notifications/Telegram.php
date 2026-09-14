@@ -37,7 +37,7 @@ trait Telegram
             $payload['message_thread_id'] = (int) $messageThreadId;
         }
         $url     = sprintf($url, $botToken);
-        $curl    = curl($url, [], 'POST', json_encode($payload));
+        $curl    = curl($url, [], 'POST', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
 
         logger($logfile, 'notification response:' . json_encode($curl), ($curl['code'] != 200 ? 'error' : ''));
 
@@ -46,7 +46,7 @@ trait Telegram
             logger($logfile, 'sending a retry in 5s...', 'warn');
             sleep(5);
 
-            $curl = curl($url, [], 'POST', json_encode($payload));
+            $curl = curl($url, [], 'POST', json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
             logger($logfile, 'notification response:' . json_encode($curl), ($curl['code'] != 200 ? 'error' : ''));
 
             if ($curl['code'] != 200) {
@@ -173,6 +173,36 @@ trait Telegram
                     }
                     $message .= "\n";
                 }
+                break;
+            case 'intrusion':
+                $message .= APP_NAME . ': Intrusion' . "\n";
+                $message .= 'Server: _' . $payload['server']['name'] . '_' . "\n";
+                $message .= 'Type: ' . $payload['type'] . "\n";
+                $message .= 'IP: ' . $payload['ip'] . "\n";
+                $message .= 'Method: ' . $payload['method'] . "\n";
+                $message .= 'URI: ' . $payload['uri'] . "\n";
+
+                if ($payload['username']) {
+                    $message .= 'Username: ' . $payload['username'] . "\n";
+                }
+
+                if ($payload['apikey']) {
+                    $message .= 'API key: ' . $payload['apikey'] . "\n";
+                }
+
+                if ($payload['container']) {
+                    $message .= 'Container: ' . $payload['container'] . "\n";
+                }
+
+                if ($payload['token']) {
+                    $message .= 'Token: ' . $payload['token'] . "\n";
+                }
+
+                if ($payload['details']) {
+                    $message .= 'Details: ' . $payload['details'] . "\n";
+                }
+
+                $message .= "\n";
                 break;
         }
 

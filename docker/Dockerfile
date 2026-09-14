@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:1@sha256:2780b5c3bab67f1f76c781860de469442999ed1a0d7992a5efdf2cffc0e3d769
-FROM ghcr.io/linuxserver/baseimage-alpine-nginx:3.23@sha256:1dfb1e075fdc7e4ddf0a2b70f1c6efa2c4f96054b22ecf02c30e9112d8b7fbea
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+FROM ghcr.io/linuxserver/baseimage-alpine-nginx:3.23@sha256:1ba8d7b3591b977d945f0188fc7bfb149614c369552f9fb62043fc978f9c9f84
 ARG TARGETARCH
 ENV TARGETARCH=${TARGETARCH}
 
@@ -16,12 +16,6 @@ ARG COMMIT_MSG=unknown
 # https://github.com/Notifiarr/dockwatch/pull/59 - for future reference
 ENV ATTACHED_DEVICES_PERMS="/var/run/docker.sock"
 
-# Add yq for YAML processing
-# renovate: datasource=github-releases lookupName=mikefarah/yq
-ARG YQ_VERSION=v4.52.4
-RUN curl -sSf -L -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \
-    && chmod +x /usr/local/bin/yq
-
 # Add regctl for container digest checks
 # renovate: datasource=github-releases lookupName=regclient/regclient
 ARG REGCTL_VERSION=v0.11.2
@@ -33,7 +27,7 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 
 # Install system packages
 ARG PHP_VERSION=85
-ARG INSTALL_PACKAGES="mariadb mariadb-client phpmyadmin docker-cli docker-cli-compose memcached expect php${PHP_VERSION}-sockets php${PHP_VERSION}-sqlite3 php${PHP_VERSION}-pecl-memcached php${PHP_VERSION}-tokenizer php${PHP_VERSION}-dom php${PHP_VERSION}-mbstring php${PHP_VERSION}-mysqli"
+ARG INSTALL_PACKAGES="mariadb mariadb-client docker-cli docker-cli-compose memcached php${PHP_VERSION}-sockets php${PHP_VERSION}-sqlite3 php${PHP_VERSION}-pecl-memcached php${PHP_VERSION}-tokenizer php${PHP_VERSION}-dom php${PHP_VERSION}-mbstring php${PHP_VERSION}-mysqli"
 RUN apk add --repository=https://dl-cdn.alpinelinux.org/alpine/v3.23/main --no-cache --update ${INSTALL_PACKAGES}
 
 # Add user for unraid docker
@@ -83,8 +77,8 @@ RUN \
     # Update php-fpm log paths to /config/logs
     sed -i 's|error_log = /config/log/php/error.log|error_log = /config/logs/php/error.log|g' "${PHP_FPM_CONF}" && \
     # Update logrotate paths to /config/logs
-    sed -i 's|/config/log/php/\*.log|/config/logs/php/*.log|' /etc/logrotate.d/nginx && \
-    sed -i 's|/config/log/nginx/\*.log|/config/logs/nginx/*.log|' /etc/logrotate.d/php-fpm && \
+    sed -i 's|/config/log/php/\*.log|/config/logs/php/*.log|' /etc/logrotate.d/php-fpm && \
+    sed -i 's|/config/log/nginx/\*.log|/config/logs/nginx/*.log|' /etc/logrotate.d/nginx && \
     sed -i 's|/config/log/logrotate.status|/config/logs/logrotate.status|g' /etc/periodic/daily/logrotate
 
 # Pass docker env vars to php-fpm

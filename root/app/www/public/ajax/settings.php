@@ -9,22 +9,45 @@
 
 require 'shared.php';
 
+//-- COMPOSER: IP VALIDATOR
+use Chialab\Ip;
+
 if ($_POST['m'] == 'init') {
     $cpus = cpuTotal();
     if ($cpus == 0) {
         $cpus = '0 (Could not get cpu count from /proc/cpuinfo)';
     }
 
-    $migrations = '<option value="000">000_fresh_start</option>';
-    $dir        = opendir(MIGRATIONS_PATH);
+    $dir = opendir(MIGRATIONS_PATH);
     while ($migration = readdir($dir)) {
         if (str_contains($migration, '.php')) {
-            $migrations .= '<option ' . ($settingsTable['migration'] == substr($migration, 0, 3) ? 'selected ' : '') . 'value="' . substr($migration, 0, 3) . '">' . str_replace('.php', '', $migration) . '</option>';
+            $migrationId = substr($migration, 0, 3);
+            $migrationNo = intval($migrationId);
+
+            $migrationLabel = str_replace('.php', '', $migration);
+            if ($migrationNo >= 1 && $migrationNo <= 22) {
+                $migrationLabel .= ' [Legacy SQLite3]';
+            }
+
+            $selected    = $settingsTable['migration'] == $migrationId;
+            $disabled    = $migrationNo >= 1 && $migrationNo <= 22;
+            $migrations .= '<option ' . ($selected ? 'selected ' : '') . ($disabled ? 'disabled ' : '') . 'value="' . $migrationId . '">' . $migrationLabel . '</option>';
         }
     }
     closedir($dir);
 
     $serverTime = apiRequest('server/time')['result']['result'];
+
+    $usersTable              = $_SESSION['activeServerId'] == APP_SERVER_ID ? (apiRequest('database/users')['result'] ?: []) : [];
+    $mergedUsers             = mergeUserSources($usersTable);
+    $hasLoginFile            = loginFileHasEntries();
+    $databaseActiveUserCount = 0;
+
+    foreach ($usersTable as $user) {
+        if (!empty($user['active'])) {
+            $databaseActiveUserCount++;
+        }
+    }
     ?>
     <ol class="breadcrumb rounded p-1 ps-2">
         <li class="breadcrumb-item"><a href="#" onclick="initPage('overview')"><?= $_SESSION['activeServerName'] ?></a><span class="ms-2">↦</span></li>
@@ -122,7 +145,92 @@ if ($_POST['m'] == 'init') {
                 </tbody>
             </table>
         </div>
-        <h4 class="text-info">Login failures</h4>
+        <h4 class="text-info">Users</h4>
+        <p class="text-muted small mb-3">No active users and an empty/missing login file will disable login auth.</p>
+        <input type="hidden" id="settings-hasLoginFile" value="<?= $hasLoginFile ? 1 : 0 ?>">
+        <input type="hidden" id="settings-databaseActiveUserCount" value="<?= $databaseActiveUserCount ?>">
+        <input type="hidden" id="settings-userManagement" value="<?= $_SESSION['activeServerId'] == APP_SERVER_ID ? 1 : 0 ?>">
+        <div class="table-responsive">
+            <table class="table table-sm table-no-squish">
+                <thead>
+                    <tr>
+                        <th class="rounded-top-left-1 bg-primary ps-3" scope="col" width="25%">Username</th>
+                        <th class="bg-primary ps-3" scope="col" width="25%">Password</th>
+                        <th class="bg-primary ps-3" scope="col" width="10%">Active</th>
+                        <th class="bg-primary ps-3" scope="col" width="20%">Source</th>
+                        <th class="rounded-top-right-1 bg-primary ps-3" scope="col" width="20%">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    if ($_SESSION['activeServerId'] != APP_SERVER_ID) {
+                        ?>
+                        <tr class="border border-dark border-top-0 border-start-0 border-end-0">
+                            <td class="bg-secondary" colspan="5">User management is only available on the local server.</td>
+                        </tr>
+                        <?php
+                    } else {
+                        foreach ($mergedUsers as $mergedUser) {
+                            $inDatabase  = !empty($mergedUser['database']);
+                            $inLoginFile = !empty($mergedUser['loginFile']);
+                            $dbUser      = $mergedUser['database'];
+                            $rowClass    = $inDatabase ? 'user-row' : 'login-file-user';
+                            ?>
+                            <tr class="<?= $rowClass ?> border border-dark border-top-0 border-start-0 border-end-0" <?= $inDatabase ? 'id="userRow-' . $dbUser['id'] . '"' : '' ?>>
+                                <td class="bg-secondary">
+                                    <?php if ($inDatabase) { ?>
+                                        <input class="form-control" type="text" id="globalSetting-userList-username-<?= $dbUser['id'] ?>" value="<?= htmlspecialchars($mergedUser['username'], ENT_QUOTES, 'UTF-8') ?>">
+                                    <?php } else { ?>
+                                        <input class="form-control" type="text" value="<?= htmlspecialchars($mergedUser['username'], ENT_QUOTES, 'UTF-8') ?>" disabled>
+                                    <?php } ?>
+                                </td>
+                                <td class="bg-secondary">
+                                    <?php if ($inDatabase) { ?>
+                                        <input class="form-control" type="password" id="globalSetting-userList-password-<?= $dbUser['id'] ?>" placeholder="unchanged if blank">
+                                    <?php } else { ?>
+                                        <input class="form-control" type="password" value="" placeholder="***" disabled>
+                                    <?php } ?>
+                                </td>
+                                <td class="bg-secondary text-center">
+                                    <?php if ($inDatabase) { ?>
+                                        <input class="form-check-input" type="checkbox" id="globalSetting-userList-active-<?= $dbUser['id'] ?>" <?= $dbUser['active'] ? 'checked' : '' ?>>
+                                    <?php } else { ?>
+                                        —
+                                    <?php } ?>
+                                </td>
+                                <td class="bg-secondary">
+                                    <?php if ($inDatabase) { ?><span class="badge bg-primary me-1">Database</span><?php } ?>
+                                    <?php if ($inLoginFile) { ?><span class="badge bg-secondary">File</span><?php } ?>
+                                </td>
+                                <td class="bg-secondary">
+                                    <?php if ($inDatabase) { ?>
+                                        <i class="far fa-trash-alt text-warning" style="cursor: pointer;" title="Remove database user" onclick="removeUser('<?= $dbUser['id'] ?>')"></i>
+                                    <?php } ?>
+                                </td>
+                            </tr>
+                            <?php
+                        }
+                        ?>
+                        <tr class="border border-dark border-top-0 border-start-0 border-end-0">
+                            <td class="bg-secondary"><input class="form-control" type="text" id="globalSetting-userList-username-new" placeholder="New username"></td>
+                            <td class="bg-secondary"><input class="form-control" type="password" id="globalSetting-userList-password-new" placeholder="New password"></td>
+                            <td class="bg-secondary text-center"><input class="form-check-input" type="checkbox" id="globalSetting-userList-active-new" checked></td>
+                            <td class="bg-secondary"><span class="badge bg-primary">Database</span></td>
+                            <td class="bg-secondary"></td>
+                        </tr>
+                        <tr class="border border-dark border-top-0 border-start-0 border-end-0">
+                            <td class="bg-secondary" colspan="5">
+                                When at least one user is active or the login file has entries, the UI requires login.
+                                File-only accounts are read-only here; edit <code><?= LOGIN_FILE ?></code> on the host to add, change, or remove them.
+                            </td>
+                        </tr>
+                        <?php
+                    }
+                    ?>
+                </tbody>
+            </table>
+        </div>
+        <h4 class="text-info">Login auth</h4>
         <div class="table-responsive">
             <table class="table table-sm table-no-squish">
                 <thead>
@@ -146,6 +254,13 @@ if ($_POST['m'] == 'init') {
                             <input class="form-control" type="number" id="globalSetting-loginTimeout" value="<?= LOGIN_FAILURE_TIMEOUT ?>">
                         </td class="bg-secondary">
                         <td class="bg-secondary">How long to block logins after the limit is reached (minutes)</td>
+                    </tr>
+                    <tr class="border border-dark border-top-0 border-start-0 border-end-0">
+                        <td class="bg-secondary" scope="row">Whitelist</t>
+                        <td class="bg-secondary">
+                            <input class="form-control" type="text" id="globalSetting-loginWhitelist" placeholder="192.168.178.0/24,172.28.0.0/16" value="<?= $settingsTable['loginWhitelist'] ?>">
+                        </td class="bg-secondary">
+                        <td class="bg-secondary">Comma-separated list of allowed IP subnets to ignore in intrusion notifications.</td>
                     </tr>
                 </tbody>
             </table>
@@ -275,7 +390,7 @@ if ($_POST['m'] == 'init') {
                                 $scanners = [
                                     'trivy' => SecurityScanner::TRIVY_ID,
                                     'grype' => SecurityScanner::GRYPE_ID,
-                                    'snyk'  => SecurityScanner::SNYK_ID
+                                    'snyk'  => SecurityScanner::SNYK_ID,
                                 ];
 
                                 foreach ($scanners as $scanner => $id) {
@@ -299,6 +414,12 @@ if ($_POST['m'] == 'init') {
                             <ul style="padding: 0 18px;">
                                 <li>Grype and Trivy are both free open-source apps</li>
                                 <li>Snyk requires a (free) <a href="https://app.snyk.io" target="_blank">account</a> API key to work</li>
+                                <li>
+                                    <span class="text-warning">
+                                        <i class="fas fa-exclamation-triangle dw-tooltip-icon" style="font-size: 12px !important; transform: translateY(-2px); color: yellow !important;"></i>
+                                        Highly recommended to allocate atleast 4GB ram to Dockwatch to prevent the scanner from running out of memory (<a href="https://github.com/Notifiarr/dockwatch/issues/145" target="_blank">GH#145</a>)
+                                    </span>
+                                </li>
                             </ul>
                         </td>
                     </tr>
@@ -459,6 +580,16 @@ if ($_POST['m'] == 'init') {
                 </thead>
                 <tbody>
                     <tr class="border border-dark border-top-0 border-start-0 border-end-0">
+                        <td class="bg-secondary" scope="row">Log level</td>
+                        <td class="bg-secondary">
+                            <select class="form-select" id="globalSetting-logLevel">
+                                <option value="<?= LOG_LEVEL_INFO ?>" <?= !$settingsTable['logLevel'] || $settingsTable['logLevel'] == LOG_LEVEL_INFO ? 'selected' : '' ?>>Info</option>
+                                <option value="<?= LOG_LEVEL_DEBUG ?>" <?= $settingsTable['logLevel'] == LOG_LEVEL_DEBUG ? 'selected' : '' ?>>Debug</option>
+                            </select>
+                        </td>
+                        <td class="bg-secondary">Debug includes full JSON payloads (Docker inspects, state snapshots, etc.)</td>
+                    </tr>
+                    <tr class="border border-dark border-top-0 border-start-0 border-end-0">
                         <td class="bg-secondary" scope="row">Crons</td>
                         <td class="bg-secondary">
                             <input class="form-control" type="number" id="globalSetting-cronLogLength" value="<?= $settingsTable['cronLogLength'] <= 1 ? 1 : $settingsTable['cronLogLength'] ?>">
@@ -502,13 +633,23 @@ if ($_POST['m'] == 'init') {
                 <tbody>
                     <tr class="border border-dark border-top-0 border-start-0 border-end-0">
                         <td class="bg-secondary" scope="row">Migration</td>
-                        <td class="bg-secondary"><select class="form-select" id="globalSetting-migration"><?= $migrations ?></select></td>
+                        <td class="bg-secondary">
+                            <div class="d-flex gap-2 align-items-center">
+                                <select class="form-select" id="globalSetting-migration"><?= $migrations ?></select>
+                                <button type="button" class="btn btn-outline-warning btn-sm text-nowrap" onclick="freshStartMigration()">Fresh Start <sup>5</sup></button>
+                            </div>
+                        </td>
                         <td class="bg-secondary">The database migration this server is on, changing this will re-apply all subsequent migrations and reset any settings they alter.</td>
                     </tr>
                     <tr class="border border-dark border-top-0 border-start-0 border-end-0">
                         <td class="bg-secondary" scope="row">Database</td>
-                        <td class="bg-secondary"><button class="btn btn-sm btn-info" onclick="initPage('database')">Browse</button></td>
-                        <td class="bg-secondary">Browse the <?= APP_NAME ?> database</td>
+                        <td class="bg-secondary">
+                            <div class="d-flex flex-wrap gap-2">
+                                <button type="button" class="btn btn-sm btn-info" onclick="initPage('database')">Browse</button>
+                                <button type="button" class="btn btn-sm btn-success" onclick="backupDatabase()">Backup</button>
+                            </div>
+                        </td>
+                        <td class="bg-secondary">Browse/backup the <?= APP_NAME ?> database. Backup runs a compressed mariadb-dump into <code><?= BACKUP_PATH ?></code>.</td>
                     </tr>
                     <tr class="border border-dark border-top-0 border-start-0 border-end-0">
                         <td class="bg-secondary" scope="row">Containers clean up</td>
@@ -577,9 +718,11 @@ if ($_POST['m'] == 'init') {
 if ($_POST['m'] == 'saveGlobalSettings') {
     $activeServer = apiGetActiveServer();
     $newSettings  = [];
+    $requireLogin = false;
+    $authDisabled = false;
 
     foreach ($_POST as $key => $val) {
-        if ($key == 'm' || str_contains($key, 'serverList')) {
+        if ($key == 'm' || str_contains($key, 'serverList') || str_contains($key, 'userList')) {
             continue;
         }
 
@@ -601,6 +744,26 @@ if ($_POST['m'] == 'saveGlobalSettings') {
     } else {
         if (preg_match('#^/[\w-]*$#', $baseUrl) && $baseUrl !== '/') {
             file_put_contents(BASE_URL_FILE, $baseUrl);
+        }
+    }
+
+    //-- SUBNET VALIDATION
+    if (!empty($_POST['loginWhitelist'])) {
+        $ipandmask = explode(',', $_POST['loginWhitelist']) ?: [];
+        if (count($ipandmask) > 0) {
+            foreach ($ipandmask as $ipmask) {
+                $ipmask = trim($ipmask);
+                try {
+                    if (str_contains($ipmask, '/')) {
+                        Ip\Subnet::parse($ipmask);
+                    } else {
+                        Ip\Address::parse($ipmask);
+                    }
+                } catch (\InvalidArgumentException $e) {
+                    echo json_encode(['error' => $ipmask . ' is not a valid ip or subnet']);
+                    exit;
+                }
+            }
         }
     }
 
@@ -633,6 +796,47 @@ if ($_POST['m'] == 'saveGlobalSettings') {
         }
 
         $serversTable = apiRequest('database/servers', [], ['serverList' => $serverList])['result'];
+
+        $userList = [];
+
+        if ($_POST['userList-username-new'] && $_POST['userList-password-new']) {
+            $userList[] = [
+                'username' => $_POST['userList-username-new'],
+                'password' => $_POST['userList-password-new'],
+                'active'   => $_POST['userList-active-new'] ? 1 : 0,
+            ];
+        }
+
+        foreach ($_POST as $key => $val) {
+            if (!str_contains($key, 'userList-password')) {
+                continue;
+            }
+
+            list($name, $field, $instanceId) = explode('-', $key);
+
+            if (!is_numeric($instanceId)) {
+                continue;
+            }
+
+            if ($_POST['userList-username-' . $instanceId]) {
+                $userList[$instanceId] = [
+                    'username' => $_POST['userList-username-' . $instanceId],
+                    'active'   => $_POST['userList-active-' . $instanceId] ? 1 : 0,
+                ];
+
+                if ($_POST['userList-password-' . $instanceId]) {
+                    $userList[$instanceId]['password'] = $_POST['userList-password-' . $instanceId];
+                }
+            }
+        }
+
+        if ($userList) {
+            apiRequest('database/users', [], ['userList' => $userList]);
+
+            $authChange   = applyUserAuthChange();
+            $requireLogin = $authChange['requireLogin'];
+            $authDisabled = $authChange['authDisabled'];
+        }
     }
 
     if ($_POST['debugZipDatabase'] || $_POST['debugZipLogs'] || $_POST['debugZipJson']) {
@@ -643,8 +847,13 @@ if ($_POST['m'] == 'saveGlobalSettings') {
 
         if ($_POST['debugZipDatabase']) {
             $zip->addEmptyDir(str_replace(APP_DATA_PATH, '', DATABASE_PATH));
-            if (file_exists(DATABASE_PATH . DATABASE_NAME)) {
-                $zip->addFile(DATABASE_PATH . DATABASE_NAME, str_replace(APP_DATA_PATH, '', DATABASE_PATH) . DATABASE_NAME);
+            $databaseBackupToday     = file_exists(DATABASE_PATH . date('Ymd') . '/' . DB_NAME . '.sql'); //-- CHECK FOR TODAY'S BACKUP
+            $databaseBackupYesterday = file_exists(DATABASE_PATH . date('Ymd', strtotime('-1 day')) . '/' . DB_NAME . '.sql'); //-- CHECK FOR YESTERDAY'S BACKUP
+
+            if ($databaseBackupToday) {
+                $zip->addFile(DATABASE_PATH . date('Ymd') . '/' . DB_NAME . '.sql', str_replace(APP_DATA_PATH, '', DATABASE_PATH) . date('Ymd') . '/' . DB_NAME . '.sql');
+            } elseif ($databaseBackupYesterday) {
+                $zip->addFile(DATABASE_PATH . date('Ymd', strtotime('-1 day')) . '/' . DB_NAME . '.sql', str_replace(APP_DATA_PATH, '', DATABASE_PATH) . date('Ymd', strtotime('-1 day')) . '/' . DB_NAME . '.sql');
             }
         }
 
@@ -692,7 +901,12 @@ if ($_POST['m'] == 'saveGlobalSettings') {
         $zip->close();
     }
 
-    echo json_encode(['error' => $error, 'server' => ACTIVE_SERVER_NAME]);
+    echo json_encode([
+        'error'        => $error ?? '',
+        'server'       => ACTIVE_SERVER_NAME,
+        'requireLogin' => !empty($requireLogin),
+        'authDisabled' => !empty($authDisabled),
+    ]);
 }
 
 //-- CALLED FROM THE NAV MENU SELECT
@@ -703,6 +917,27 @@ if ($_POST['m'] == 'updateActiveServer') {
 if ($_POST['m'] == 'unlinkRemoteServer') {
     $serversTable[intval($_POST['id'])]['remove'] = true;
     apiRequest('database/servers', [], ['serverList' => $serversTable]);
+}
+
+if ($_POST['m'] == 'removeUser') {
+    if ($_SESSION['activeServerId'] != APP_SERVER_ID) {
+        echo json_encode(['error' => 'User management is only available on the local server']);
+        exit;
+    }
+
+    $userId   = intval($_POST['id']);
+    $userList = [$userId => ['remove' => true]];
+
+    apiRequest('database/users', [], ['userList' => $userList]);
+
+    $authChange = applyUserAuthChange();
+
+    echo json_encode([
+        'error'        => '',
+        'requireLogin' => !empty($authChange['requireLogin']),
+        'authDisabled' => !empty($authChange['authDisabled']),
+    ]);
+    exit;
 }
 
 if ($_POST['m'] == 'updateSetting') {

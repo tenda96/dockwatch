@@ -54,8 +54,7 @@ class Notifications
                 break;
             }
         }
-
-        $platformId = $notificationLinkData['platform_id'] ?? $notificationLinkData['platform'] ?? null;
+        $platformId = $notificationLinkData['platform'] ?? $notificationLinkData['platform_id'] ?? null;
         $notificationPlatform = null;
 
         foreach ($notificationPlatformTable as $platform) {
@@ -127,7 +126,7 @@ class Notifications
         $results = [];
 
         foreach ($linkIds as $linkId) {
-            $platformId         = $linkId['platform_id'] ?? $linkId['platform'] ?? null;
+            $platformId         = $linkId['platform'] ?? $linkId['platform_id'] ?? null;
             $platformParameters = json_decode($linkId['platform_parameters'], true) ?: [];
             $platformName       = '';
 
@@ -145,7 +144,7 @@ class Notifications
             $logfile = $this->logpath . $platformName . '.log';
 
             logger($logfile, 'notification request to ' . $platformName);
-            logger($logfile, 'notification payload: ' . json_encode($payload));
+            logger($logfile, 'notification payload: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE));
 
             switch ($platformId) {
                 case NotificationPlatforms::NOTIFIARR:

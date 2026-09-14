@@ -20,15 +20,16 @@ if (!canCronRun('prune', $settingsTable)) {
     exit();
 }
 
+$processList  = json_decode($docker->processList(), true);
 $imagePrune   = $imageList = $volumePrune = [];
 $networkPrune = [];
-$images       = json_decode($docker->getOrphanContainers(), true);
+$images       = json_decode($docker->getOrphanContainers($processList), true);
 $volumes      = json_decode($docker->getOrphanVolumes(), true);
 $networks     = json_decode($docker->getOrphanNetworks(), true);
 
-logger(CRON_PRUNE_LOG, 'images=' . json_encode($images));
-logger(CRON_PRUNE_LOG, 'volumes=' . json_encode($volumes));
-logger(CRON_PRUNE_LOG, 'networks=' . json_encode($networks));
+logger(CRON_PRUNE_LOG, 'images=' . json_encode($images), 'debug');
+logger(CRON_PRUNE_LOG, 'volumes=' . json_encode($volumes), 'debug');
+logger(CRON_PRUNE_LOG, 'networks=' . json_encode($networks), 'debug');
 
 if ($settingsTable['autoPruneImages']) {
     if ($images) {

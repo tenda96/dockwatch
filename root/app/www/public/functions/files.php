@@ -36,11 +36,23 @@ function setFile($file, $contents)
 
     $contents = is_array($contents) ? json_encode($contents) : $contents;
     file_put_contents($file, $contents);
+
+    if ($file == MIGRATION_FILE) {
+        logger(MIGRATION_LOG, 'setFile():' . $file, 'shell');
+    }
 }
 
 function deleteFile($file)
 {
+    if (!file_exists($file)) {
+        return;
+    }
+
     logger(SYSTEM_LOG, 'deleteFile() ' . $file);
 
     unlink($file);
+
+    if ($file == MIGRATION_FILE) {
+        logger(MIGRATION_LOG, 'deleteFile():' . $file, 'shell');
+    }
 }

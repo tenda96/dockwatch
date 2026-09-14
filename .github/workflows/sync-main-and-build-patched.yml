@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout patched branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ env.CUSTOM_BRANCH }}
           fetch-depth: 0
@@ -96,7 +96,7 @@ jobs:
             --label "upstream-watch" \
             --search "Telegram topic support upstream" \
             --json number \
-            --jq '.[0].number // empty')
+            --jq '.[0].number // empty' || true)
 
           if [ -z "$existing" ]; then
             cat > /tmp/upstream-topic-issue.md <<EOF
@@ -118,7 +118,7 @@ jobs:
               --repo "${{ github.repository }}" \
               --label "upstream-watch" \
               --title "Telegram topic support upstream may now be available" \
-              --body-file /tmp/upstream-topic-issue.md
+              --body-file /tmp/upstream-topic-issue.md || echo "::warning::Unable to create upstream-watch issue; repository issues may be disabled."
           fi
 
       - name: Merge upstream main into patched branch
@@ -159,7 +159,7 @@ jobs:
             --label "upstream-watch" \
             --search "Manual upstream merge needed" \
             --json number \
-            --jq '.[0].number // empty')
+            --jq '.[0].number // empty' || true)
 
           if [ -z "$existing" ]; then
             cat > /tmp/merge-failed-issue.md <<EOF
@@ -170,7 +170,7 @@ jobs:
           Files to check:
           - root/app/www/public/classes/traits/Notifications/Telegram.php
           - root/app/www/public/classes/Notifications.php
-          - root/app/www/public/migrations/023_telegram_thread_id.php
+          - root/app/www/public/migrations/030_telegram_thread_id.php
 
           Action needed:
           1. Open the failed workflow run.
@@ -183,7 +183,7 @@ jobs:
               --repo "${{ github.repository }}" \
               --label "upstream-watch" \
               --title "Manual upstream merge needed for telegram-topic-support-main" \
-              --body-file /tmp/merge-failed-issue.md
+              --body-file /tmp/merge-failed-issue.md || echo "::warning::Unable to create upstream-watch issue; repository issues may be disabled."
           fi
 
           exit 1

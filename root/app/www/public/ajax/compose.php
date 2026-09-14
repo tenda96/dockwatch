@@ -9,6 +9,61 @@
 
 require 'shared.php';
 
+use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Yaml;
+
+function composeResolvePath($input)
+{
+    //-- BASENAME STRIPS ANY PATH TRAVERSAL, GUARANTEEING A SINGLE DIR INSIDE THE COMPOSE STORE
+    $name = basename(trim((string) $input));
+
+    if ($name === '' || $name === '.' || $name === '..') {
+        return '';
+    }
+
+    return COMPOSE_PATH . $name;
+}
+
+function composeValidateAndWrite($dir, $yaml)
+{
+    if (!is_dir($dir)) {
+        return 'Failed to save file.<br>The compose directory does not exist.';
+    }
+
+    $tmpFile   = $dir . '/.docker-compose.validate.yml';
+    $finalFile = $dir . '/docker-compose.yml';
+
+    if (file_put_contents($tmpFile, $yaml) === false) {
+        return 'Failed to save file.<br>Unable to write the temporary file, nothing was changed.';
+    }
+
+    //-- PARSE INPUT YAML
+    try {
+        Yaml::parse($yaml);
+    } catch (ParseException $e) {
+        unlink($tmpFile);
+        return 'Failed to save file.<br>YAML syntax error: ' . htmlspecialchars($e->getMessage());
+    }
+
+    //-- DOCKER COMPOSE VALIDATION
+    $dcOutput = shell_exec('docker compose -f ' . escapeshellarg($tmpFile) . ' config 2>&1; echo __DC_EXIT__$?');
+    preg_match('/__DC_EXIT__(\d+)\s*$/', rtrim((string) $dcOutput), $dcMatches);
+
+    if (!isset($dcMatches[1]) || (int) $dcMatches[1] !== 0) {
+        unlink($tmpFile);
+        $dcError = trim(preg_replace('/__DC_EXIT__\d+\s*$/', '', (string) $dcOutput));
+        return 'Failed to save file.<br>docker compose validation failed: ' . htmlspecialchars($dcError ?: 'unknown error, the file was not changed.');
+    }
+
+    //-- IF BOTH PASSED = WRITE FINAL FILE
+    if (!rename($tmpFile, $finalFile)) {
+        unlink($tmpFile);
+        return 'Failed to save file.<br>Unable to write the final file, nothing was changed.';
+    }
+
+    return 'Saved';
+}
+
 $composeExample = 'services:
   dockwatch:
     image: "ghcr.io/notifiarr/dockwatch:main"
@@ -25,17 +80,30 @@ $composeExample = 'services:
       - /home/dockwatch/config:/config
       - /var/run/docker.sock:/var/run/docker.sock';
 
-$existingComposeFolders = [];
-$dir                    = opendir(COMPOSE_PATH);
+$composeFiles = [];
+$dir          = opendir(COMPOSE_PATH);
 while ($folder = readdir($dir)) {
     if ($folder[0] == '.') {
         continue;
     }
 
-    $existingComposeFolders[strtolower($folder)] = COMPOSE_PATH . $folder;
+    $composePath   = COMPOSE_PATH . $folder;
+    $composeFile   = $composePath . '/docker-compose.yml';
+    $composeExists = file_exists($composeFile);
+
+    $composeFiles[] = [
+        'name'          => $folder,
+        'path'          => $composePath,
+        'composeExists' => $composeExists,
+        'added'         => is_dir($composePath) ? filectime($composePath) : null,
+        'updated'       => $composeExists ? filemtime($composeFile) : (is_dir($composePath) ? filemtime($composePath) : null),
+    ];
 }
 closedir($dir);
-sort($existingComposeFolders);
+
+usort($composeFiles, function ($a, $b) {
+    return strcasecmp($a['name'], $b['name']);
+});
 
 if ($_POST['m'] == 'init') {
     if ($_SESSION['activeServerId'] != APP_SERVER_ID) {
@@ -46,82 +114,120 @@ if ($_POST['m'] == 'init') {
             <li class="breadcrumb-item"><a href="#" onclick="initPage('overview')"><?= $_SESSION['activeServerName'] ?></a><span class="ms-2">↦</span></li>
             <li class="breadcrumb-item active" aria-current="page">Compose</li>
         </ol>
-        <div class="bg-secondary rounded h-100 p-4">
-            <h4>Add new compose</h4>
-            <span class="small-text"><code><?= COMPOSE_PATH ?>{name}/docker-compose.yml</code></span>
-            <div class="table-responsive">
-                <table class="table table-sm table-no-squish">
-                    <thead>
-                        <tr>
-                            <th class="rounded-top-left-1 bg-primary ps-3">Name</th>
-                            <th class="bg-primary ps-3">Compose</th>
-                            <th class="rounded-top-right-1 bg-primary ps-3"></th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td class="bg-secondary"><input id="new-compose-name" class="form-control" type="text" placeholder="dockwatch"></td>
-                            <td class="bg-secondary"><textarea id="new-compose-data" class="form-control" rows="10" placeholder="<?= htmlspecialchars($composeExample) ?>"></textarea></td>
-                            <td class="bg-secondary text-center"><input class="btn btn-outline-success" type="button" value="Add Compose" onclick="composeAdd()"></td>
-                        </tr>
-                    </tbody>
-                    <tfoot>
-                        <tr>
-                            <td class="rounded-bottom-left-1 rounded-bottom-right-1 bg-primary ps-3" colspan="3">
-                                Important notes:<br>
-                                1. This <b>will not</b> validate the compose or yml. You need to make sure it is a valid compose and all spacing/indenting is accurate<br>
-                                2. This is not really meant to run a full stack compose, it is done via the browser so it can possibly timeout if it takes to long to pull
-                            </td>
-                        </tr>
-                    </tfoot>
-                </table>
-            </div>
-        </div>
-        <div class="bg-secondary rounded mt-3 p-4">
-            <h4>Compose management</h4>
-            <span class="small-text text-muted">You can ssh into the container and run it manually <code>cd <?= COMPOSE_PATH ?>{name} && docker-compose pull</code></span>
-            <div class="table-responsive">
-                <table class="table table-sm table-no-squish">
-                    <thead>
-                        <tr>
-                            <th class="rounded-top-left-1 bg-primary ps-3">Compose Location</th>
-                            <th class="rounded-top-right-1 bg-primary ps-3">Controls</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php
-                        if ($existingComposeFolders) {
-                            foreach ($existingComposeFolders as $existingComposeFolder) {
-                                $composeExists = false;
-                                if (file_exists($existingComposeFolder . '/docker-compose.yml')) {
-                                    $composeExists = true;
-                                }
-                                ?>
-                                <tr class="border border-dark border-top-0 border-start-0 border-end-0">
-                                    <td class="bg-secondary"><?= $existingComposeFolder ?></td>
-                                    <?php
-                                    if ($composeExists) {
+        <div class="bg-secondary rounded p-4">
+            <div class="row">
+                <div class="col-sm-12">
+                    <div id="compose-table-buttons" class="d-none">
+                        <input id="compose-add-btn" class="btn btn-outline-success dt-button mt-2 buttons-collection access-rw" type="button" value="Add Compose" tabindex="0" aria-controls="compose-table" onclick="openComposeAdd()">
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-no-squish" id="compose-table">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="rounded-top-left-1 bg-primary ps-3 container-table-header noselect">Stack</th>
+                                    <th scope="col" class="bg-primary ps-3 container-table-header noselect hide-mobile">Added</th>
+                                    <th scope="col" class="bg-primary ps-3 container-table-header noselect hide-mobile">Updated</th>
+                                    <th scope="col" class="bg-primary ps-3 container-table-header noselect hide-mobile">Location</th>
+                                    <th scope="col" class="bg-primary ps-3 container-table-header noselect hide-mobile">Containers</th>
+                                    <th scope="col" class="bg-primary ps-3 container-table-header noselect no-sort text-center hide-mobile">docker-compose</th>
+                                    <th scope="col" class="text-center rounded-top-right-1 bg-primary ps-3 container-table-header noselect no-sort">Controls</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php
+                                if ($composeFiles) {
+                                    foreach ($composeFiles as $composeFile) {
+                                        $runningCount = 0;
+                                        $stoppedCount = 0;
+
+                                        if ($composeFile['composeExists']) {
+                                            $composePs       = sprintf(DockerSock::COMPOSE_PS, $composeFile['path'], '-a');
+                                            $composePsOutput = $shell->exec($composePs . ' 2>&1');
+
+                                            if (!str_contains($composePsOutput, 'Error')) {
+                                                foreach (array_filter(explode("\n", trim($composePsOutput))) as $composePsLine) {
+                                                    $composePsRow = json_decode($composePsLine, true);
+
+                                                    if (!is_array($composePsRow)) {
+                                                        continue;
+                                                    }
+
+                                                    $state = strtolower($composePsRow['State'] ?? '');
+                                                    if ($state == 'running') {
+                                                        $runningCount++;
+                                                    } else {
+                                                        $stoppedCount++;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        $composePathEscaped = htmlspecialchars($composeFile['path'], ENT_QUOTES);
+                                        $addedLabel         = $composeFile['added'] ? date('m/d/Y h:i A', $composeFile['added']) : '';
+                                        $updatedLabel       = $composeFile['updated'] ? date('m/d/Y h:i A', $composeFile['updated']) : '';
                                         ?>
-                                        <td class="bg-secondary">
-                                            <input type="button" class="btn btn-outline-info" value="docker-compose pull" onclick="composePull('<?= $existingComposeFolder ?>')">
-                                            <input type="button" class="btn btn-outline-info" value="docker-compose up -d" onclick="composeUp('<?= $existingComposeFolder ?>')">
-                                            <input type="button" class="btn btn-outline-warning" value="Modify" onclick="composeModify('<?= $existingComposeFolder ?>')">
-                                            <input type="button" class="btn btn-outline-danger" value="Delete" onclick="composeDelete('<?= $existingComposeFolder ?>')">
-                                        </td>
-                                        <?php
-                                    } else {
-                                        ?>
-                                        <td class="bg-secondary" colspan="2">docker-compose.yml is missing / has invalid permissions</td>
+                                        <tr>
+                                            <td class="container-table-row bg-secondary">
+                                                <span><?= htmlspecialchars($composeFile['name']) ?></span>
+                                                <?php if (!$composeFile['composeExists']) { ?>
+                                                    <br><span class="small-text text-warning">docker-compose.yml missing</span>
+                                                <?php } ?>
+                                            </td>
+                                            <td class="container-table-row bg-secondary hide-mobile" data-sort="<?= $composeFile['added'] ?>">
+                                                <span class="small-text text-muted"><?= $addedLabel ?></span>
+                                            </td>
+                                            <td class="container-table-row bg-secondary hide-mobile" data-sort="<?= $composeFile['updated'] ?>">
+                                                <span class="small-text text-muted"><?= $updatedLabel ?></span>
+                                            </td>
+                                            <td class="container-table-row bg-secondary hide-mobile">
+                                                <span class="small-text text-muted"><?= htmlspecialchars($composeFile['path']) ?></span>
+                                            </td>
+                                            <td class="container-table-row bg-secondary hide-mobile">
+                                                <div class="d-flex flex-row align-items-start gap-3">
+                                                    <div class="small-text text-muted text-center">
+                                                        <span class="d-block"><?= $runningCount + $stoppedCount ?></span>
+                                                    </div>
+                                                    <?php if ($composeFile['composeExists']) { ?>
+                                                        <div class="small-text text-muted border-start ps-3">
+                                                            <span class="d-block">Running: <?= $runningCount ?></span>
+                                                            <span class="d-block<?= $stoppedCount > 0 ? ' text-danger' : '' ?>">Stopped: <?= $stoppedCount ?></span>
+                                                        </div>
+                                                    <?php } ?>
+                                                </div>
+                                            </td>
+                                            <td class="container-table-row bg-secondary text-center hide-mobile">
+                                                <?php if ($composeFile['composeExists']) { ?>
+                                                    <input type="button" class="btn btn-outline-info" value="ps" onclick="compose('<?= $composePathEscaped ?>', 'composePs')">
+                                                    <input type="button" class="btn btn-outline-info" value="logs" onclick="compose('<?= $composePathEscaped ?>', 'composeLogs')">
+                                                    <input type="button" class="btn btn-outline-info" value="stop" onclick="compose('<?= $composePathEscaped ?>', 'composeStop')">
+                                                    <input type="button" class="btn btn-outline-info" value="down" onclick="compose('<?= $composePathEscaped ?>', 'composeDown')">
+                                                    <input type="button" class="btn btn-outline-info" value="restart" onclick="compose('<?= $composePathEscaped ?>', 'composeRestart')">
+                                                    <input type="button" class="btn btn-outline-info" value="pull" onclick="compose('<?= $composePathEscaped ?>', 'composePull')">
+                                                    <input type="button" class="btn btn-outline-info" value="up -d" onclick="compose('<?= $composePathEscaped ?>', 'composeUp')">
+                                                <?php } else { ?>
+                                                    <span class="small-text text-muted">docker-compose.yml is missing</span>
+                                                <?php } ?>
+                                            </td>
+                                            <td class="container-table-row bg-secondary text-center">
+                                                <?php if ($composeFile['composeExists']) { ?>
+                                                    <input type="button" class="btn btn-outline-warning access-rw" value="Modify" onclick="composeModify('<?= $composePathEscaped ?>')">
+                                                    <input type="button" class="btn btn-outline-danger access-rww" value="Delete" onclick="composeDelete('<?= $composePathEscaped ?>')">
+                                                <?php } ?>
+                                            </td>
+                                        </tr>
                                         <?php
                                     }
-                                    ?>
+                                }
+                                ?>
+                            </tbody>
+                            <tfoot>
+                                <tr>
+                                    <td class="rounded-bottom-right-1 rounded-bottom-left-1 bg-primary ps-3" colspan="7"></td>
                                 </tr>
-                                <?php
-                            }
-                        }
-                        ?>
-                    </tbody>
-                </table>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
         <?php
@@ -129,77 +235,153 @@ if ($_POST['m'] == 'init') {
 }
 
 if ($_POST['m'] == 'composeSave') {
-    //-- MAKE SURE THE PATH IS IN THE COMPOSE LOCATION PATH
-    if (substr($_POST['composePath'], 0, strlen(COMPOSE_PATH)) == COMPOSE_PATH) {
-        $path = $_POST['composePath'] . '/docker-compose.yml';
+    $dir = composeResolvePath($_POST['composePath'] ?? '');
 
-        //-- SAVE TO FILE
-        file_put_contents($path, rawurldecode($_POST['compose']));
-
-        //-- VALIDATE YAML
-        $yqOutput = $shell->exec('yq eval "." ' . escapeshellarg($path) . ' 2>&1');
-        $yqResult = str_contains($yqOutput, 'Error') ? $yqOutput : '0';
-
-        //-- CHECK IF IT IS A VALID DOCKER COMPOSE FILE
-        $dockerOutput = $shell->exec('docker compose -f ' . escapeshellarg($path) . ' config 2>&1');
-        $dockerResult = !str_contains($dockerOutput, 'name') ? $dockerOutput : '0';
-
-        //-- RETURN RESULTS
-        if ($yqResult === '0' && $dockerResult === '0') {
-            $compose           = file_get_contents($path);
-            $syntaxHighlighted = $phiki->codeToHtml($compose, Phiki\Grammar\Grammar::Yaml, Phiki\Theme\Theme::GithubDark);
-
-            echo $syntaxHighlighted;
-        } else {
-            echo 'Failed to save file.<br>Error: ' . htmlspecialchars($yqResult !== '0' ? preg_replace('/^Error:\s*/', '', $yqResult) : $dockerResult);
-        }
+    if ($dir === '' || !is_dir($dir)) {
+        echo 'Failed to save file.<br>Invalid compose path.';
+    } else {
+        echo composeValidateAndWrite($dir, rawurldecode($_POST['compose'] ?? ''));
     }
 }
 
 if ($_POST['m'] == 'composeModify') {
-    $path              = $_POST['composePath'] . '/docker-compose.yml';
-    $compose           = file_get_contents($path);
-    $syntaxHighlighted = $phiki->codeToHtml($compose, Phiki\Grammar\Grammar::Yaml, Phiki\Theme\Theme::GithubDark);
+    $dir = composeResolvePath($_POST['composePath'] ?? '');
 
+    if ($dir === '' || !is_dir($dir)) {
+        echo 'Failed to load compose.<br>Invalid compose path.';
+    } else {
+        $compose = file_get_contents($dir . '/docker-compose.yml');
+
+        ?>
+        <code class="small-text text-muted"><?= htmlspecialchars($dir) ?>/docker-compose.yml</code><br>
+        <textarea id="compose-data" style="display:none;"><?= htmlspecialchars($compose) ?></textarea>
+        <div id="compose-data-editor" style="height: 400px; margin-top: 8px;"></div>
+        <div class="text-center mt-3">
+            <button class="btn btn-outline-success" onclick="composeSave('<?= htmlspecialchars($dir) ?>')">Save file</button>
+        </div>
+        <?php
+    }
+}
+
+if ($_POST['m'] == 'composeAddForm') {
     ?>
-    <code><?= $_POST['composePath'] ?>/docker-compose.yml</code><br>
-    <div id="compose-data-preview" onclick="$('#compose-data').show(); $(this).hide();"><?= $syntaxHighlighted ?></div>
-    <textarea id="compose-data" class="form-control" rows="15" style='display: none;'><?= $compose ?></textarea><br>
-    <center><input type="button" class="btn btn-outline-success" value="Save file" onclick="composeSave('<?= $_POST['composePath'] ?>', $('#compose-data').val())"></center>
+    <span class="small-text"><code><?= COMPOSE_PATH ?>{name}/docker-compose.yml</code></span>
+    <div class="row mt-3">
+        <div class="col-12 mb-3">
+            <label class="form-label">Name</label>
+            <input id="new-compose-name" class="form-control" type="text" placeholder="dockwatch">
+        </div>
+        <div class="col-12 mb-3">
+            <label class="form-label">Compose</label>
+            <textarea id="compose-add-data" style="display:none;"></textarea>
+            <div id="compose-add-editor" style="height: 300px;" data-placeholder="<?= htmlspecialchars($composeExample, ENT_QUOTES) ?>"></div>
+        </div>
+        <div class="col-12 text-center">
+            <button class="btn btn-outline-success access-rw" onclick="composeAdd()">Add Compose</button>
+        </div>
+    </div>
     <?php
 }
 
 if ($_POST['m'] == 'composeAdd') {
-    $path = COMPOSE_PATH . preg_replace('/[^ \w]+/', '', $_POST['name']);
-    createDirectoryTree($path);
-    file_put_contents($path . '/docker-compose.yml', rawurldecode($_POST['compose']));
+    //-- STRICT NAME SANITIZATION
+    $name = preg_replace('/[^A-Za-z0-9_\-.]+/', '', (string) ($_POST['name'] ?? ''));
+
+    if ($name === '') {
+        $result = 'Failed to save file.<br>Invalid compose name.';
+    } else {
+        $dir = COMPOSE_PATH . $name;
+        if (!is_dir($dir)) {
+            createDirectoryTree($dir);
+        }
+
+        $result = composeValidateAndWrite($dir, rawurldecode($_POST['compose'] ?? ''));
+
+        //-- DON'T LEAVE AN EMPTY DIRECTORY BEHIND ON A FAILED ADD
+        if ($result !== 'Saved' && is_dir($dir)) {
+            rmdir($dir);
+        }
+    }
+
+    echo $result;
 }
 
 if ($_POST['m'] == 'composeDelete') {
-    //-- MAKE SURE THE PATH IS IN THE COMPOSE LOCATION PATH
-    if (substr($_POST['composePath'], 0, strlen(COMPOSE_PATH)) == COMPOSE_PATH) {
-        $shell->exec('rm -rf ' . $_POST['composePath']);
+    $dir = composeResolvePath($_POST['composePath'] ?? '');
+
+    //-- BASENAME GUARANTEES WE ONLY DELETE INSIDE THE COMPOSE STORE
+    if ($dir !== '' && is_dir($dir)) {
+        $shell->exec('rm -rf ' . escapeshellarg($dir));
     }
 }
 
-if ($_POST['m'] == 'composePull') {
-    $cmd  = 'cd ' . $_POST['composePath'] . ' && docker-compose pull';
-    $pull = $shell->exec($cmd . ' 2>&1');
+if ($_POST['m'] == 'composePs') {
+    $cmd    = sprintf(DockerSock::COMPOSE_PS, escapeshellarg($_POST['composePath']), '-a');
+    $output = $shell->exec($cmd . ' 2>&1');
 
-    if (str_contains_all($pull, ['Pulling', 'Pulled'])) {
-        echo 'pulled';
+    if (str_contains($output, 'Error') || str_contains($output, 'error')) {
+        echo '<pre class="small-text text-muted mb-0">' . htmlspecialchars($output) . '</pre>';
     } else {
-        echo $pull;
+        $rows = [];
+        foreach (array_filter(explode("\n", trim($output))) as $line) {
+            $row = json_decode($line, true);
+            if (is_array($row)) {
+                $rows[] = $row;
+            }
+        }
+
+        if (!$rows) {
+            echo '<p class="text-muted mb-0">No compose containers found.</p>';
+        } else {
+            ?>
+            <table class="table table-sm table-no-squish mb-0">
+                <thead>
+                    <tr>
+                        <th class="rounded-top-left-1 bg-primary ps-3">Name</th>
+                        <th class="bg-primary ps-3">Service</th>
+                        <th class="bg-primary ps-3">State</th>
+                        <th class="rounded-top-right-1 bg-primary ps-3">Ports</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    foreach ($rows as $row) {
+                        $name    = htmlspecialchars($row['Name'] ?? '');
+                        $service = htmlspecialchars($row['Service'] ?? '');
+                        $state   = htmlspecialchars($row['State'] ?? ($row['Status'] ?? ''));
+                        $ports   = array_filter(array_map('trim', explode(',', $row['Ports'] ?? '')));
+                        ?>
+                        <tr>
+                            <td class="bg-secondary"><?= $name ?></td>
+                            <td class="bg-secondary"><?= $service ?></td>
+                            <td class="bg-secondary"><?= $state ?></td>
+                            <td class="bg-secondary">
+                                <?php
+                                if ($ports) {
+                                    foreach ($ports as $port) {
+                                        ?><span class="d-block small-text text-muted"><?= htmlspecialchars($port) ?></span><?php
+                                    }
+                                } else {
+                                    ?><span class="text-muted">-</span><?php
+                                }
+                                ?>
+                            </td>
+                        </tr>
+                        <?php
+                    }
+                    ?>
+                </tbody>
+            </table>
+            <?php
+        }
     }
 }
 
-if ($_POST['m'] == 'composeUp') {
-    $cmd = 'cd ' . $_POST['composePath'] . ' && docker-compose up -d';
-    $up  = $shell->exec($cmd . ' 2>&1');
+if ($_POST['m'] == 'composeLogs') {
+    $cmd = sprintf(DockerSock::COMPOSE_LOGS, escapeshellarg($_POST['composePath']));
+    echo $shell->exec($cmd . ' 2>&1');
+}
 
-    if (str_contains_all($up, ['Container', 'Started']) || str_contains_all($up, ['Container', 'Running'])) {
-        echo 'up';
-    } else {
-        echo $up;
-    }
+if ($_POST['m'] == 'composeToken') {
+    echo json_encode(createWebSocketSession(MEMCACHE_COMPOSE_TOKEN_KEY, 'action', '?type=compose'));
 }

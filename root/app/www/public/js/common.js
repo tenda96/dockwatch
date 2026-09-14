@@ -18,6 +18,20 @@ let GRAPH_UTILIZATION_MEMORY_SIZE_DATA      = '';
 let GRAPH_UTILIZATION_MEMORY_SIZE_COLORS    = '';
 
 $(document).ready(function () {
+    if (USE_AUTH && CSRF_TOKEN) {
+        $.ajaxSetup({
+            beforeSend: function (xhr, settings) {
+                if (settings.type === 'POST') {
+                    xhr.setRequestHeader('X-CSRF-Token', CSRF_TOKEN);
+
+                    if (settings.data && typeof settings.data === 'string' && settings.data.indexOf('csrf=') === -1) {
+                        settings.data += '&csrf=' + encodeURIComponent(CSRF_TOKEN);
+                    }
+                }
+            }
+        });
+    }
+
     setScreenSizeVars();
     let keys = getLocalStorage(localStorageKeys); //-- LOAD LOCAL STORAGE
 
@@ -178,7 +192,61 @@ function initPage(page)
             }
 
             if (page == 'security') {
-                initSecurityTable();
+                $('#security-table').dataTable({
+                    dom: 'lfBrtip',
+                    stateSave: false,
+                    paging: false,
+                    ordering: true,
+                    order: [[2, 'asc']],
+                    columnDefs: [{ 
+                        targets: [0, 1, 8], 
+                        orderable: false 
+                    }],
+                    buttons: [],
+                    initComplete: function () {
+                        $('#security-table_filter label').addClass('text-secondary');
+                        $('#security-table_filter input').attr('placeholder', 'Search').removeClass('form-control').addClass('text-muted form-control-sm');
+
+                        let $btnGroup = $('.dt-buttons');
+                        if (!$btnGroup.length) {
+                            $btnGroup = $('<div class="dt-buttons btn-group flex-wrap"></div>');
+                            $('#security-table_wrapper .dataTables_filter').before($btnGroup);
+                        }
+
+                        $btnGroup.prepend($('#check-all-security-btn')).append($('#security-scan-btn'));
+                        $('.dataTables_filter').addClass('dt-buttons');
+                        $('.sorting_disabled').removeClass('sorting_asc');
+                    }
+                });
+            }
+
+            if (page == 'compose') {
+                $('#compose-table').dataTable({
+                    dom: 'lfBrtip',
+                    stateSave: false,
+                    paging: false,
+                    ordering: true,
+                    order: [[0, 'asc']],
+                    columnDefs: [{
+                        targets: 'no-sort',
+                        orderable: false
+                    }],
+                    buttons: [],
+                    initComplete: function () {
+                        $('#compose-table_filter label').addClass('text-secondary');
+                        $('#compose-table_filter input').attr('placeholder', 'Search').removeClass('form-control').addClass('text-muted form-control-sm');
+
+                        let $btnGroup = $('.dt-buttons');
+                        if (!$btnGroup.length) {
+                            $btnGroup = $('<div class="dt-buttons btn-group flex-wrap"></div>');
+                            $('#compose-table_wrapper .dataTables_filter').before($btnGroup);
+                        }
+
+                        $btnGroup.append($('#compose-add-btn'));
+                        $('.dataTables_filter').addClass('dt-buttons');
+                        $('.sorting_disabled').removeClass('sorting_asc');
+                    }
+                });
             }
 
             if (page == 'containers') {
@@ -281,6 +349,10 @@ function login()
                 return;
             }
 
+            if (resultData.recovery) {
+                toast('Login', 'Recovery login successful. Update your password in Settings and remove the login file entry when finished.', 'warn');
+            }
+
             reload();
         }
     });
@@ -303,6 +375,22 @@ function logout()
 function reload()
 {
     window.location.href = './';
+}
+// ---------------------------------------------------------------------------------------------
+function removeMigrationFile()
+{
+    pageLoadingStart();
+    $.ajax({
+        type: 'POST',
+        url: 'ajax/shared.php',
+        data: { m: 'removeMigrationFile' },
+        success: function () {
+            reload();
+        },
+        error: function () {
+            pageLoadingStop();
+        }
+    });
 }
 // ---------------------------------------------------------------------------------------------
 function toast(title, message, type)
@@ -558,7 +646,10 @@ function setActiveNavLink(linkColor, DEFAULT_PAGE)
 
     linkColor.forEach(l => {
         if (l.classList.contains('active')) l.classList.remove('active');
-        if (l.onclick.toString().match(/initPage\('(.+)'\)/)[1] == DEFAULT_PAGE) l.classList.add('active');
+
+        let match = l.onclick && l.onclick.toString().match(/initPage\('(.+)'\)/);
+        if (match && match[1] == DEFAULT_PAGE) l.classList.add('active');
+
         l.addEventListener('click', colorLink);
     });
 }

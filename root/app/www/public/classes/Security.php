@@ -18,6 +18,7 @@ class Security
     protected $shell;
     protected $docker;
     protected $memcache;
+    protected $database;
 
     /**
      * Constructor.
@@ -30,6 +31,8 @@ class Security
 
         $this->memcache = $memcache ?? new Memcached();
         $this->memcache->addServer(MEMCACHE_HOST, MEMCACHE_PORT);
+
+        $this->database = $database ?? new Database();
     }
 
     /**
@@ -54,6 +57,7 @@ class Security
         $hash       = $this->docker->getImageHash($image);
         $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
         createDirectoryTree(SECURITY_PATH . $hashPrefix);
+        $scanFile = SECURITY_PATH . $hashPrefix . '/result_' . time() . '.json';
 
         switch ($scanner) {
             case SecurityScanner::TRIVY_ID:
@@ -61,7 +65,7 @@ class Security
                     SecurityScanner::TRIVY_SCAN_IMAGE,
                     SECURITY_PATH,
                     SECURITY_PATH,
-                    $this->shell->prepare('"' . SECURITY_PATH . $hashPrefix . '/result_' . time() . '.json"'),
+                    $this->shell->prepare($scanFile),
                     $this->shell->prepare($image),
                 );
                 break;
@@ -69,7 +73,7 @@ class Security
                 $cmd = sprintf(
                     SecurityScanner::GRYPE_SCAN_IMAGE,
                     SECURITY_PATH,
-                    $this->shell->prepare('"' . SECURITY_PATH . $hashPrefix . '/result_' . time() . '.json"'),
+                    $this->shell->prepare($scanFile),
                     $this->shell->prepare($image),
                 );
                 break;
@@ -78,14 +82,27 @@ class Security
                     SecurityScanner::SNYK_SCAN_IMAGE,
                     SECURITY_PATH,
                     $this->shell->prepare($snykApiKey),
-                    $this->shell->prepare(SECURITY_PATH . $hashPrefix . '/result_' . time() . '.json'),
+                    $this->shell->prepare($scanFile),
                     $this->shell->prepare($image),
                 );
                 break;
         }
 
         $shell = $this->shell->exec($cmd . ' 2>&1');
+        $this->recordScan($image, $hash, $scanFile);
+
         return $shell;
+    }
+
+    private function recordScan($image, $hash, $scanFile)
+    {
+        $scanFile = str_replace(SECURITY_PATH, '', $scanFile);
+
+        $q = "INSERT INTO " . SECURITY_SCANS_TABLE . "
+              (`image_name`, `image_hash`, `scan_file`, `created_at`)
+              VALUES
+              ('" . $this->database->prepare($image) . "', '" . $this->database->prepare($hash) . "', '" . $this->database->prepare($scanFile) . "', '" . time() . "')";
+        $this->database->mysqli_query($q);
     }
 
     /**
@@ -103,30 +120,31 @@ class Security
             return $cache;
         }
 
-        $hash       = $this->docker->getImageHash($image);
-        $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
-        $imagePath  = SECURITY_PATH . $hashPrefix;
-
-        if (!is_dir($imagePath)) {
-            return [];
-        }
-
-        $resultFiles = glob($imagePath . '/result_*.json');
-        if (empty($resultFiles)) {
-            return [];
-        }
-
-        usort($resultFiles, function ($a, $b) {
-            return filemtime($b) - filemtime($a);
-        });
+        $imageName = $this->database->prepare($image);
 
         if ($file) {
-            $scanFile = $imagePath . '/' . $file;
-            if (!file_exists($scanFile)) {
-                return [];
-            }
+            $q = "SELECT scan_file
+                  FROM " . SECURITY_SCANS_TABLE . "
+                  WHERE image_name = '" . $imageName . "'
+                  AND scan_file LIKE '%" . $this->database->prepare($file) . "%'
+                  ORDER BY created_at DESC LIMIT 1";
         } else {
-            $scanFile = $resultFiles[0];
+            $q = "SELECT scan_file
+                  FROM " . SECURITY_SCANS_TABLE . "
+                  WHERE image_name = '" . $imageName . "'
+                  ORDER BY created_at DESC LIMIT 1";
+        }
+
+        $r   = $this->database->mysqli_query($q);
+        $row = $this->database->mysqli_fetchAssoc($r);
+
+        if (empty($row)) {
+            return [];
+        }
+
+        $scanFile = SECURITY_PATH . $row['scan_file'];
+        if (!file_exists($scanFile)) {
+            return [];
         }
 
         $scanData    = json_decode(file_get_contents($scanFile), true);
@@ -154,10 +172,6 @@ class Security
             return $cache;
         }
 
-        $hash       = $this->docker->getImageHash($image);
-        $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
-        $imagePath  = SECURITY_PATH . $hashPrefix;
-
         $counts = [
             'critical' => 0,
             'high'     => 0,
@@ -167,24 +181,22 @@ class Security
             'lastScan' => null,
         ];
 
-        if (!is_dir($imagePath)) {
+        $imageName = $this->database->prepare($image);
+        $q         = "SELECT scan_file, created_at
+                      FROM " . SECURITY_SCANS_TABLE . "
+                      WHERE image_name = '" . $imageName . "'
+                      ORDER BY created_at DESC LIMIT 1";
+        $r         = $this->database->mysqli_query($q);
+        $row       = $this->database->mysqli_fetchAssoc($r);
+
+        if (empty($row)) {
             return $counts;
         }
 
-        $resultFiles = glob($imagePath . '/result_*.json');
-        if (empty($resultFiles)) {
-            return $counts;
-        }
-
-        usort($resultFiles, function ($a, $b) {
-            return filemtime($b) - filemtime($a);
-        });
-
-        $counts['lastScan'] = filemtime($resultFiles[0]);
-
-        $latestScan  = $resultFiles[0];
-        $scanData    = json_decode(file_get_contents($latestScan), true);
-        $parsedVulns = $this->parseVulns($scanData);
+        $counts['lastScan'] = intval($row['created_at']);
+        $scanFile           = SECURITY_PATH . $row['scan_file'];
+        $scanData           = json_decode(file_get_contents($scanFile), true);
+        $parsedVulns        = $this->parseVulns($scanData);
 
         if (empty($parsedVulns)) {
             return $counts;
@@ -217,18 +229,16 @@ class Security
             return $cache;
         }
 
-        $hash       = $this->docker->getImageHash($image);
-        $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
-        $imagePath  = SECURITY_PATH . $hashPrefix;
+        $imageName = $this->database->prepare($image);
+        $q         = "SELECT COUNT(*) AS total
+                      FROM " . SECURITY_SCANS_TABLE . "
+                      WHERE image_name = '" . $imageName . "'";
+        $r         = $this->database->mysqli_query($q);
+        $row       = $this->database->mysqli_fetchAssoc($r);
+        $count     = intval($row['total'] ?? 0);
 
-        if (!is_dir($imagePath)) {
-            return 0;
-        }
-
-        $resultFiles = glob($imagePath . '/result_*.json');
-
-        $this->memcache->set(sprintf(MEMCACHE_SECURITY_SCAN_HISTORY_COUNT_KEY, $image), count($resultFiles), MEMCACHE_SECURITY_SCAN_HISTORY_COUNT_TIME);
-        return count($resultFiles);
+        $this->memcache->set(sprintf(MEMCACHE_SECURITY_SCAN_HISTORY_COUNT_KEY, $image), $count, MEMCACHE_SECURITY_SCAN_HISTORY_COUNT_TIME);
+        return $count;
     }
 
     /**
@@ -245,26 +255,21 @@ class Security
             return $cache;
         }
 
-        $hash       = $this->docker->getImageHash($image);
-        $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
-        $imagePath  = SECURITY_PATH . $hashPrefix;
-
-        if (!is_dir($imagePath)) {
-            return [];
-        }
-
-        $resultFiles = glob($imagePath . '/result_*.json');
-        if (empty($resultFiles)) {
-            return [];
-        }
-
-        usort($resultFiles, function ($a, $b) {
-            return filemtime($b) - filemtime($a);
-        });
+        $imageName = $this->database->prepare($image);
+        $q         = "SELECT scan_file, created_at
+                      FROM " . SECURITY_SCANS_TABLE . "
+                      WHERE image_name = '" . $imageName . "'
+                      ORDER BY created_at DESC";
+        $r         = $this->database->mysqli_query($q);
 
         $history = [];
-        foreach ($resultFiles as $file) {
-            $scanData    = json_decode(file_get_contents($file), true);
+        while ($row = $this->database->mysqli_fetchAssoc($r)) {
+            $scanFile = SECURITY_PATH . $row['scan_file'];
+            if (!file_exists($scanFile)) {
+                continue;
+            }
+
+            $scanData    = json_decode(file_get_contents($scanFile), true);
             $parsedVulns = $this->parseVulns($scanData);
             $counts      = ['critical' => 0, 'high' => 0, 'medium' => 0, 'low' => 0, 'unknown' => 0];
 
@@ -280,9 +285,9 @@ class Security
             }
 
             $history[] = [
-                'file'      => basename($file),
-                'timestamp' => filemtime($file),
-                'date'      => date('Y-m-d H:i:s', filemtime($file)),
+                'file'      => basename($row['scan_file']),
+                'timestamp' => intval($row['created_at']),
+                'date'      => date('Y-m-d H:i:s', intval($row['created_at'])),
                 'counts'    => $counts,
             ];
         }
@@ -311,12 +316,12 @@ class Security
                         $vulns[] = [
                             'id'        => $vuln['VulnerabilityID'],
                             'source'    => "https://nvd.nist.gov/vuln/detail/" . $vuln['VulnerabilityID'],
-                            'pkg'       => $pkgName,
+                            'pkg'       => $this->sanitize($pkgName),
                             'installed' => $vuln['InstalledVersion'],
                             'fixed'     => $vuln['FixedVersion'],
                             'status'    => $vuln['Status'],
                             'severity'  => $vuln['Severity'],
-                            'title'     => $vuln['Title'] ?: $pkgName,
+                            'title'     => $this->sanitize($vuln['Title']),
                             'published' => $vuln['PublishedDate'] ?? ''
                         ];
                     }
@@ -334,12 +339,12 @@ class Security
                     $vulns[]  = [
                         'id'        => $vuln['id'],
                         'source'    => $vuln['dataSource'],
-                        'pkg'       => $pkgName,
+                        'pkg'       => $this->sanitize($pkgName),
                         'installed' => $artifact['version'] ?? 'unknown',
                         'fixed'     => $vuln['fix']['versions'][0] ?? null,
                         'status'    => $vuln['fix']['state'] ?? 'unknown',
                         'severity'  => $vuln['severity'],
-                        'title'     => truncateEnd($vuln['description'], 80) ?: $pkgName,
+                        'title'     => truncateEnd($this->sanitize($vuln['description']), 80),
                         'published' => $vuln['epss'][0]['date'] ?? ''
                     ];
                 }
@@ -353,12 +358,12 @@ class Security
                 $vulns[] = [
                     'id'        => $vuln['id'],
                     'source'    => str_starts_with($vuln['id'], 'snyk:lic:') ? 'https://snyk.io/security' : 'https://snyk.io/vuln/' . $vuln['id'],
-                    'pkg'       => $pkgName,
+                    'pkg'       => $this->sanitize($pkgName),
                     'installed' => $vuln['version'] ?? 'unknown',
                     'fixed'     => $vuln['fixedIn'][0] ?? null,
                     'status'    => !empty($vuln['fixedIn']) ? 'fixed' : 'unknown',
                     'severity'  => ucfirst($vuln['severity'] ?? 'unknown'),
-                    'title'     => $vuln['title'] ?: $pkgName,
+                    'title'     => $this->sanitize($vuln['title']),
                     'published' => $vuln['publicationTime'] ?? ''
                 ];
             }
@@ -373,12 +378,12 @@ class Security
                         $vulns[] = [
                             'id'        => $vuln['id'],
                             'source'    => str_starts_with($vuln['id'], 'snyk:lic:') ? 'https://snyk.io/security' : 'https://snyk.io/vuln/' . $vuln['id'],
-                            'pkg'       => $pkgName,
+                            'pkg'       => $this->sanitize($pkgName),
                             'installed' => $vuln['version'] ?? 'unknown',
                             'fixed'     => $vuln['fixedIn'][0] ?? null,
                             'status'    => !empty($vuln['fixedIn']) ? 'fixed' : 'unknown',
                             'severity'  => ucfirst($vuln['severity'] ?? 'unknown'),
-                            'title'     => $vuln['title'] ?: $pkgName,
+                            'title'     => $this->sanitize($vuln['title']),
                             'published' => $vuln['publicationTime'] ?? ''
                         ];
                     }
@@ -403,27 +408,27 @@ class Security
             return $cache;
         }
 
-        $hash       = $this->docker->getImageHash($image);
-        $hashPrefix = substr(preg_replace('/sha256\:/', '', $hash), 0, 4);
-        $imagePath  = SECURITY_PATH . $hashPrefix;
+        $imageName = $this->database->prepare($image);
+        $q         = "SELECT scan_file, created_at
+                      FROM " . SECURITY_SCANS_TABLE . "
+                      WHERE image_name = '" . $imageName . "'
+                      ORDER BY created_at DESC LIMIT 2";
+        $r         = $this->database->mysqli_query($q);
 
-        if (!is_dir($imagePath)) {
+        $scans = [];
+        while ($row = $this->database->mysqli_fetchAssoc($r)) {
+            $scans[] = $row;
+        }
+
+        if (empty($scans)) {
             return [];
         }
 
-        $resultFiles = glob($imagePath . '/result_*.json');
-        if (empty($resultFiles)) {
-            return [];
-        }
-
-        usort($resultFiles, function ($a, $b) {
-            return filemtime($b) - filemtime($a);
-        });
-
-        $latestScan  = json_decode(file_get_contents($resultFiles[0]), true);
+        $latestFile  = SECURITY_PATH . $scans[0]['scan_file'];
+        $latestScan  = json_decode(file_get_contents($latestFile), true);
         $latestVulns = $this->parseVulns($latestScan);
 
-        if (count($resultFiles) < 2) {
+        if (count($scans) < 2) {
             $newVulns = [];
             foreach ($latestVulns as $vuln) {
                 $vuln['changeType'] = 'new';
@@ -432,7 +437,8 @@ class Security
             return $newVulns;
         }
 
-        $previousScan  = json_decode(file_get_contents($resultFiles[1]), true);
+        $previousFile  = SECURITY_PATH . $scans[1]['scan_file'];
+        $previousScan  = json_decode(file_get_contents($previousFile), true);
         $previousVulns = $this->parseVulns($previousScan);
 
         $previousMap = [];
@@ -454,6 +460,29 @@ class Security
 
         $this->memcache->set(sprintf(MEMCACHE_SECURITY_NEW_VULNS_KEY, $image), $newVulns, MEMCACHE_SECURITY_NEW_VULNS_TIME);
         return $newVulns;
+    }
+
+    /**
+     * Sanitize and strip invalid UTF-8 chars from string
+     *
+     * @param string $string to sanitize
+     *
+     * @return string
+     */
+    private function sanitize($string)
+    {
+        if (!is_string($string)) {
+            return $string;
+        }
+
+        $encoding = mb_detect_encoding($string, ['UTF-8', 'ISO-8859-1', 'Windows-1252'], true);
+        if ($encoding && $encoding !== 'UTF-8') {
+            $string = mb_convert_encoding($string, 'UTF-8', $encoding);
+        }
+        $string = mb_scrub($string, 'UTF-8');
+        $string = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $string);
+
+        return $string;
     }
 
     /**

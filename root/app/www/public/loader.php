@@ -21,9 +21,6 @@ define('ACCESS_MODE', 0);
 //-- COMPOSER AUTOLOADER
 require __DIR__ . '/../vendor/autoload.php';
 
-//-- COMPOSER DEPENDENCIES
-use Phiki\Phiki;
-
 //-- NOT STARTUP
 if (!defined('IS_STARTUP')) {
     define('IS_STARTUP', false);
@@ -54,6 +51,28 @@ if (!defined('ABSOLUTE_PATH')) {
     }
 }
 
+if (!defined('IS_MAINTENANCE')) {
+    define('IS_MAINTENANCE', getenv('DOCKWATCH_MAINTENANCE') == '1');
+}
+
+$dockwatchScriptPath = $_SERVER['SCRIPT_FILENAME'] ?? $_SERVER['PHP_SELF'] ?? '';
+if ($dockwatchScriptPath == '' && !empty($_SERVER['argv'][0])) {
+    $arg0 = $_SERVER['argv'][0];
+    if (str_starts_with($arg0, '/')) {
+        $dockwatchScriptPath = $arg0;
+    } else {
+        $base                = isset($_SERVER['PWD']) ? rtrim($_SERVER['PWD'], '/') . '/' : getcwd() . '/';
+        $joined              = $base . $arg0;
+        $resolved            = realpath($joined);
+        $dockwatchScriptPath = $resolved != false ? $resolved : $joined;
+    }
+}
+
+$dockwatchCronParent = $dockwatchScriptPath != '' ? basename(dirname($dockwatchScriptPath)) : '';
+if (IS_MAINTENANCE && (str_contains($dockwatchScriptPath, '/crons/') || str_contains($dockwatchScriptPath, '\\crons\\') || strcasecmp($dockwatchCronParent, 'crons') == 0)) {
+    exit(0);
+}
+
 $loadTimes = [];
 $start     = microtime(true);
 
@@ -78,6 +97,15 @@ foreach ($autoloadDirs as $autoloadDir) {
 
 foreach ($autoloadFiles as $autoloadFile) {
     require $autoloadFile;
+}
+
+if (isCronOrStartupScript($dockwatchScriptPath, $dockwatchCronParent) && php_sapi_name() !== 'cli') {
+    http_response_code(403);
+    exit('Forbidden');
+}
+
+if (!defined('APP_SERVER_URL')) {
+    define('APP_SERVER_URL', appServerUrl());
 }
 
 //-- SET URL BASE FROM FILE IF IT EXISTS AND IS NOT EMPTY
@@ -105,111 +133,138 @@ switch (ACCESS_MODE) {
 
 $loadTimes[] = trackTime('page ->', $start);
 
+session_set_cookie_params([
+    'lifetime' => 0,
+    'path'     => '/',
+    'secure'   => !empty($_SERVER['HTTPS']),
+    'httponly' => true,
+    'samesite' => 'Strict',
+]);
+
 if (!$_SESSION) {
     session_start();
 }
 
-define('REMOTE_SERVER_TIMEOUT', $settingsTable['remoteServerTimeout'] ?: DEFAULT_REMOTE_SERVER_TIMEOUT);
-
 if (!IS_SSE) {
-    //-- RUN REQUIRED CHECKS
     automation();
 
-    //-- INITIALIZE MEMCACHE
-    logger(SYSTEM_LOG, 'Init class: Memcache()');
-    /** @disregard */
-    $memcache = new Memcached();
-    $memcache->addServer(MEMCACHE_HOST, MEMCACHE_PORT);
+    if (IS_MAINTENANCE) {
+        logger(SYSTEM_LOG, 'Init: maintenance container, database skipped', 'shell');
 
-    //-- INITIALIZE THE DATABASE CLASS
-    logger(SYSTEM_LOG, 'Init class: Database()');
-    $database = new Database();
+        define('REMOTE_SERVER_TIMEOUT', DEFAULT_REMOTE_SERVER_TIMEOUT);
 
-    if (!IS_STARTUP) {
-        $highestMigration = $database->getNewestMigration();
-        $currentMigration = $settingsTable['migration'];
+        $settingsTable = [
+            'maintenancePort'     => (string) APP_MAINTENANCE_PORT,
+            'maintenanceIP'       => '',
+            'loginFailures'       => 10,
+            'remoteServerTimeout' => (string) DEFAULT_REMOTE_SERVER_TIMEOUT,
+        ];
+        $serversTable  = [
+            APP_SERVER_ID => [
+                'id'     => APP_SERVER_ID,
+                'name'   => 'local',
+                'url'    => APP_SERVER_URL,
+                'apikey' => getenv('DOCKWATCH_APIKEY') ?: '',
+            ],
+        ];
 
-        if ($currentMigration < $highestMigration) {
-            //-- RUN MIGRATIONS
-            apiRequestLocal('database/migrations');
+        define('USER_THEME', 'nzblack');
+        define('USER_THEME_MODE', 'dark');
+        $themes = [];
+
+        $_SESSION['activeServerId']     = APP_SERVER_ID;
+        $_SESSION['activeServerName']   = $serversTable[APP_SERVER_ID]['name'];
+        $_SESSION['activeServerUrl']    = rtrim($serversTable[APP_SERVER_ID]['url'], '/');
+        $_SESSION['activeServerApikey'] = $serversTable[APP_SERVER_ID]['apikey'];
+        define('ACTIVE_SERVER_NAME', $serversTable[APP_SERVER_ID]['name']);
+
+        $database = new Database();
+    } else {
+        logger(SYSTEM_LOG, 'Init class: Memcache()');
+        $memcache = new Memcached();
+        $memcache->addServer(MEMCACHE_HOST, MEMCACHE_PORT);
+
+        logger(SYSTEM_LOG, 'Init class: Database()');
+        $database = new Database();
+
+        $settingsTable = apiRequestLocal('database/settings');
+        $serversTable  = apiRequestLocal('database/servers');
+
+        define('REMOTE_SERVER_TIMEOUT', $settingsTable['remoteServerTimeout'] ?: DEFAULT_REMOTE_SERVER_TIMEOUT);
+
+        define('USER_THEME', $settingsTable['defaultTheme'] && file_exists('themes/' . $settingsTable['defaultTheme'] . '.min.css') ? $settingsTable['defaultTheme'] : 'nzblack');
+        define('USER_THEME_MODE', $settingsTable['defaultThemeMode'] ?: 'dark');
+        $themes = getThemes();
+
+        if (!$_SESSION['activeServerId'] || str_contains($_SERVER['PHP_SELF'], '/api/')) {
+            apiSetActiveServer(APP_SERVER_ID, $serversTable);
+            define('ACTIVE_SERVER_NAME', $serversTable[APP_SERVER_ID]['name']);
+        } else {
+            $activeServer = apiGetActiveServer();
+            define('ACTIVE_SERVER_NAME', $serversTable[$activeServer['id']]['name']);
         }
     }
 
-    $settingsTable = apiRequestLocal('database/settings');
-    $serversTable  = apiRequestLocal('database/servers');
-
-    define('USER_THEME', $settingsTable['defaultTheme'] && file_exists('themes/' . $settingsTable['defaultTheme'] . '.min.css') ? $settingsTable['defaultTheme'] : 'nzblack');
-    define('USER_THEME_MODE', $settingsTable['defaultThemeMode'] ?: 'dark');
-    $themes = getThemes();
-
-    //-- SET ACTIVE INSTANCE
-    if (!$_SESSION['activeServerId'] || str_contains($_SERVER['PHP_SELF'], '/api/')) {
-        apiSetActiveServer(APP_SERVER_ID, $serversTable);
-        define('ACTIVE_SERVER_NAME', $serversTable[APP_SERVER_ID]['name']);
-    } else {
-        $activeServer = apiGetActiveServer();
-        define('ACTIVE_SERVER_NAME', $serversTable[$activeServer['id']]['name']);
-    }
-
-    //-- INITIALIZE THE SHELL CLASS
     logger(SYSTEM_LOG, 'Init class: Shell()');
     $shell = new Shell();
 
-    //-- INITIALIZE THE DOCKER CLASS
     logger(SYSTEM_LOG, 'Init class: Docker()');
     $docker = new Docker();
 
-    //-- CHECK IF DOCKER IS AVAILABLE
     $isDockerApiAvailable = $docker->apiIsAvailable();
+    $apiVersionError      = $docker->apiVersionError();
+    if ($apiVersionError) {
+        preg_match_all('/[0-9].[0-9]+/', $apiVersionError, $apiVersions);
+    }
+    $apiPermissionsError = $docker->apiPermissionsError();
 
-    //-- INITIALIZE THE NOTIFY CLASS
-    $notifications = new Notifications();
-    logger(SYSTEM_LOG, 'Init class: Notifications()');
+    if (!IS_MAINTENANCE) {
+        $notifications = new Notifications();
+        logger(SYSTEM_LOG, 'Init class: Notifications()');
 
-    //-- INITIALIZE PHIKI
-    /** @disregard */
-    $phiki = new Phiki();
-    logger(SYSTEM_LOG, 'Init class: Phiki()');
+        $security = new Security();
+        logger(SYSTEM_LOG, 'Init class: Security()');
 
-    //-- INITIALIZE SECURITY
-    $security = new Security();
-    logger(SYSTEM_LOG, 'Init class: Security()');
-
-    if (!str_contains_any($_SERVER['PHP_SELF'], ['/api/']) && !str_contains($_SERVER['PWD'], 'oneshot')) {
-        $stateFile = apiRequestLocal('file/state');
-        $pullsFile = apiRequestLocal('file/pull');
+        if (!str_contains_any($_SERVER['PHP_SELF'], ['/api/']) && !str_contains($_SERVER['PWD'], 'oneshot')) {
+            $stateFile = apiRequestLocal('file/state');
+            $pullsFile = apiRequestLocal('file/pull');
+        }
     }
 }
 
-if (!str_contains_any($_SERVER['PHP_SELF'], ['/api/']) && !str_contains($_SERVER['PWD'], 'oneshot')) {
+if (!IS_SSE && !str_contains_any($_SERVER['PHP_SELF'], ['/api/']) && !str_contains($_SERVER['PWD'], 'oneshot')) {
     //-- LOGIN, DEFINE AFTER LOADING SETTINGS
     define('LOGIN_FAILURE_LIMIT', $settingsTable['loginFailures'] ?: 10);
-    define('LOGIN_FAILURE_TIMEOUT', $settingsTable['loginFailures'] ?: 10); //-- MINUTES TO DISABLE LOGINS
+    define('LOGIN_FAILURE_TIMEOUT', $settingsTable['loginTimeout'] ?: ($settingsTable['loginFailures'] ?: 10)); //-- MINUTES TO DISABLE LOGINS
 
-    if (file_exists(LOGIN_FILE) && !str_contains($_SERVER['PHP_SELF'], '/crons/')) {
-        define('USE_AUTH', true);
-        $loginsFile = file(LOGIN_FILE);
-
-        foreach ($loginsFile as $login) {
-            if ($login == 'admin:password') {
-                exit('Default admin:password is in the login file, change it & refresh');
-            }
-        }
-    } else {
-        define('USE_AUTH', false);
-        $_SESSION['authenticated'] = true;
+    $activeUserCount = 0;
+    if (!IS_MAINTENANCE) {
+        $activeUserCount = $database->getActiveUserCount();
     }
 
-    if (!$_SESSION['authenticated']) {
-        if (!str_contains($_SERVER['PHP_SELF'], 'login.php')) {
-            header('Location: login.php');
+    define('USE_AUTH', $activeUserCount > 0 || loginFileHasEntries());
+
+    if (loginFileHasDefaultPassword()) {
+        exit('Default admin:password is in the login file, change it & refresh');
+    }
+
+    if (!USE_AUTH || isCliCronOrStartup($dockwatchScriptPath, $dockwatchCronParent)) {
+        $_SESSION['authenticated'] = true;
+        $_SESSION['auth_optional'] = true;
+    }
+
+    enforceAuthentication();
+
+    if ($_SESSION['authenticated']) {
+        $_SESSION['IN_DOCKWATCH'] = true;
+
+        if (USE_AUTH) {
+            initCsrfToken();
         }
-    } else {
-        logger(SYSTEM_LOG, 'Starting');
     }
 }
 
-if (!IS_SSE) {
+if (!IS_SSE && !IS_MAINTENANCE) {
     $baseFile = basename($_SERVER['PHP_SELF']);
 
     //-- FLIP TO REMOTE MANAGEMENT IF NEEDED

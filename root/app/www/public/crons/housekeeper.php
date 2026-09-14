@@ -80,45 +80,50 @@ if (date('H') == 0 && date('i') <= 5) {
             'crons' => [
                 [
                     'message' => 'Cron log file cleanup (daily @ midnight)',
-                    'length'  => ($settingsTable['cronLogLength'] <= 1 ? 1 : $settingsTable['cronLogLength'])
-                ]
-            ]
+                    'length'  => ($settingsTable['cronLogLength'] <= 1 ? 1 : $settingsTable['cronLogLength']),
+                ],
+            ],
         ],
         [
             'notifications' => [
                 [
                     'message' => 'Notification log file cleanup (daily @ midnight)',
-                    'length'  => ($settingsTable['notificationLogLength'] <= 1 ? 1 : $settingsTable['notificationLogLength'])
-                ]
-            ]
+                    'length'  => ($settingsTable['notificationLogLength'] <= 1 ? 1 : $settingsTable['notificationLogLength']),
+                ],
+            ],
         ],
         [
             'security' => [
                 [
                     'message' => 'Scan file cleanup (daily @ midnight)',
-                    'length'  => ($settingsTable['securityScanLength'] <= 2 ? 2 : $settingsTable['securityScanLength'])
-                ]
-            ]
+                    'length'  => ($settingsTable['securityScanLength'] <= 2 ? 2 : $settingsTable['securityScanLength']),
+                ],
+            ],
         ],
         [
             'system' => [
                 [
                     'type'    => 'app',
                     'message' => 'System log file cleanup (daily @ midnight)',
-                    'length'  => 1
+                    'length'  => 1,
                 ],
                 [
                     'type'    => 'ui',
                     'message' => 'UI log file cleanup (daily @ midnight)',
-                    'length'  => ($settingsTable['uiLogLength'] <= 1 ? 1 : $settingsTable['uiLogLength'])
+                    'length'  => ($settingsTable['uiLogLength'] <= 1 ? 1 : $settingsTable['uiLogLength']),
                 ],
                 [
                     'type'    => 'api',
                     'message' => 'API log file cleanup (daily @ midnight)',
-                    'length'  => ($settingsTable['apiLogLength'] <= 1 ? 1 : $settingsTable['apiLogLength'])
-                ]
-            ]
-        ]
+                    'length'  => ($settingsTable['apiLogLength'] <= 1 ? 1 : $settingsTable['apiLogLength']),
+                ],
+                [
+                    'type'    => 'intrusion',
+                    'message' => 'Intrusion log file cleanup (daily @ midnight)',
+                    'length'  => ($settingsTable['apiLogLength'] <= 1 ? 1 : $settingsTable['apiLogLength']),
+                ],
+            ],
+        ],
     ];
 
     foreach ($cleanup as $folders) {
@@ -152,6 +157,14 @@ if (date('H') == 0 && date('i') <= 5) {
                             if ($daysBetween > $settings['length']) {
                                 logger(CRON_HOUSEKEEPER_LOG, 'removing logfile');
                                 $shell->exec('rm -rf ' . $path);
+
+                                $relativePath = $hash . '/' . $log;
+                                $q            = "DELETE FROM " . SECURITY_SCANS_TABLE . "
+                                      WHERE scan_file = '" . $database->prepare($relativePath) . "'";
+                                $r            = $database->mysqli_query($q);
+                                if (!$r) {
+                                    logger(CRON_HOUSEKEEPER_LOG, 'error deleting scan file: ' . $q);
+                                }
                             }
                         }
                         closedir($scanFolder);
@@ -187,6 +200,7 @@ if (date('H') == 0 && date('i') <= 5) {
 if (!is_dir(BACKUP_PATH . date('Ymd'))) {
     createDirectoryTree(BACKUP_PATH . date('Ymd'));
     $defines = get_defined_constants();
+
     foreach ($defines as $define => $defineValue) {
         if (str_contains($define, '_FILE') && str_contains_all($defineValue, ['config/', '.json'])) {
             $backupFiles[] = $defineValue;
@@ -199,7 +213,7 @@ if (!is_dir(BACKUP_PATH . date('Ymd'))) {
 
         logger(CRON_HOUSEKEEPER_LOG, 'backup file \'' . APP_DATA_PATH . $file . '\' to \'' . BACKUP_PATH . $file . '\'');
         copy(APP_DATA_PATH . $file, BACKUP_PATH . date('Ymd') . '/' . $file);
-        $database->backup();
+        $database->mysqli_backup();
     }
 }
 
@@ -218,6 +232,24 @@ while ($backup = readdir($dir)) {
             }
         }
     }
+}
+
+//-- CLEAN UP VULN SCANNER TEMP FILES (DAILY @ MIDNIGHT)
+if (date('H') == 0 && date('i') <= 5) {
+    logger(CRON_HOUSEKEEPER_LOG, 'Vuln scanner temp cleanup (daily @ midnight)');
+
+    $dir = opendir(SYSTEM_TMP);
+    while ($file = readdir($dir)) {
+        if ($file === '.' || $file === '..') {
+            continue;
+        }
+
+        if (str_contains($file, 'stereoscope') && is_dir(SYSTEM_TMP . $file)) {
+            logger(CRON_HOUSEKEEPER_LOG, 'removing \'' . SYSTEM_TMP . $file . '\'');
+            $shell->exec('rm -rf ' . escapeshellarg(SYSTEM_TMP . $file));
+        }
+    }
+    closedir($dir);
 }
 
 echo date('c') . ' Cron: housekeeper <-' . "\n";

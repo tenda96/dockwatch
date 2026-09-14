@@ -16,25 +16,29 @@ if (!defined('ABSOLUTE_PATH')) {
 echo 'require_once ' . ABSOLUTE_PATH . 'loader.php' . "\n";
 require_once ABSOLUTE_PATH . 'loader.php';
 
-//-- INITIALIZE MEMCACHE
-$memcache = $memcache ?? new Memcached();
-$memcache->addServer(MEMCACHE_HOST, MEMCACHE_PORT);
+if (!IS_MAINTENANCE) {
+    //-- INITIALIZE MEMCACHE
+    $memcache ??= new Memcached();
+    $memcache->addServer(MEMCACHE_HOST, MEMCACHE_PORT);
 
-//-- INITIALIZE THE DATABASE CLASS
-$database = $database ?? new Database();
+    //-- INITIALIZE THE DATABASE CLASS
+    $database ??= new Database();
 
-//-- INITIALIZE THE NOTIFY CLASS
-$notifications = $notifications ?? new Notifications();
+    //-- INITIALIZE THE NOTIFY CLASS
+    $notifications ??= new Notifications();
+}
 
 //-- INITIALIZE THE MAINTENANCE CLASS
-$maintenance = $maintenance ?? new Maintenance();
+$maintenance = new Maintenance();
 
-//-- INITIALIZE SECURITY
-$security = $security ?? new Security();
+if (!IS_MAINTENANCE) {
+    //-- INITIALIZE SECURITY
+    $security ??= new Security();
+}
 
-logger(STARTUP_LOG, 'Container init (Start/Restart) ->');
+logger(STARTUP_LOG, 'Container init (Start/Restart) ->', 'shell');
 
-$name = file_exists(TMP_PATH . 'restart.txt') || file_exists(TMP_PATH . 'update.txt') ? 'dockwatch-maintenance' : 'dockwatch';
+$name = IS_MAINTENANCE ? 'dockwatch-maintenance' : 'dockwatch';
 
 //-- STARTUP TELEMETRY CHECK
 if ($name == 'dockwatch') {
@@ -42,29 +46,87 @@ if ($name == 'dockwatch') {
 }
 
 //-- STARTUP NOTIFICATION
-$notify['state']['changed'][] = ['container' => $name, 'previous' => '.....', 'current' => 'Started/Restarted'];
+if (!IS_MAINTENANCE) {
+    $notify['state']['changed'][] = ['container' => $name, 'previous' => '.....', 'current' => 'Started/Restarted'];
 
-if (apiRequest('database/notification/trigger/enabled', ['trigger' => 'stateChange'])['result']) {
-    $payload = ['event' => 'state', 'changes' => $notify['state']['changed']];
-    $notifications->notify(0, 'stateChange', $payload);
+    if (apiRequest('database/notification/trigger/enabled', ['trigger' => 'stateChange'])['result']) {
+        $payload = ['event' => 'state', 'changes' => $notify['state']['changed']];
+        $notifications->notify(0, 'stateChange', $payload);
 
-    logger(STARTUP_LOG, 'Sending ' . $name . ' started notification');
-} else {
-    logger(STARTUP_LOG, 'Skipping ' . $name . ' started notification, no senders found with stateChange enabled', 'warn');
+        logger(STARTUP_LOG, 'Sending ' . $name . ' started notification', 'shell');
+    } else {
+        logger(STARTUP_LOG, 'Skipping ' . $name . ' started notification, no senders found with stateChange enabled', 'warn');
+    }
+
+    $version    = gitVersion();
+    $branch     = gitBranch();
+    $image_hash = getDockwatchContainerHash();
+
+    $q   = "SELECT * FROM `" . VERSION_TABLE . "` LIMIT 1";
+    $res = $database->mysqli_query($q);
+    $row = $database->mysqli_fetchAssoc($res);
+
+    if (empty($row)) {
+        $q = "INSERT INTO " . VERSION_TABLE . "
+                      (`version`, `branch`, `image_hash`, `updated_at`)
+                      VALUES
+                      ('" . $database->prepare($version) . "', '" . $database->prepare($branch) . "', '" . $database->prepare($image_hash) . "', '" . time() . "')";
+        $database->mysqli_query($q);
+    } else {
+        if ($row['version'] !== $version || $row['branch'] !== $branch || $row['image_hash'] !== $image_hash) {
+            echo "* Updated " . $name . " from " . $row['version'] . " [" . $row['branch'] . "]" . " → " . $version . " [" . $branch . "]" . " *\n";
+
+            $q = "UPDATE " . VERSION_TABLE . "
+                          SET version = '" . $database->prepare($version) . "', branch = '" . $database->prepare($branch) . "', image_hash = '" . $database->prepare($image_hash) . "', updated_at = '" . time() . "'
+                          WHERE id = '" . $database->prepare($row['id']) . "'";
+            $database->mysqli_query($q);
+
+            if (apiRequest('database/notification/trigger/enabled', ['trigger' => 'updated'])['result']) {
+                $payload = [
+                    'event'   => 'updates',
+                    'updated' => [
+                        [
+                            'container' => getDockwatchContainerName(),
+                            'image'     => str_replace(':main', '', APP_IMAGE),
+                            'pre'       => ['digest' => $row['image_hash'], 'version' => $row['version'] . ' [' . $row['branch'] . ']'],
+                            'post'      => ['digest' => $image_hash, 'version' => $version . ' [' . $branch . ']']
+                        ]
+                    ]
+                ];
+                $notifications->notify(0, 'updated', $payload);
+            }
+        }
+    }
 }
 
 //-- WEBSOCKET SERVER
-$cmd = '/usr/bin/php ' . ABSOLUTE_PATH . 'websocket.php > /dev/null 2>&1 &';
-exec($cmd);
+if (!IS_MAINTENANCE) {
+    $websocketPidFile = '/run/dockwatch/websocket.pid';
+    $websocketRunning = false;
+
+    if (file_exists($websocketPidFile)) {
+        $websocketPid = (int) file_get_contents($websocketPidFile);
+        if ($websocketPid >= 2 && file_exists('/proc/' . $websocketPid)) {
+            $websocketRunning = true;
+        } else {
+            unlink($websocketPidFile);
+        }
+    }
+
+    if (!$websocketRunning) {
+        logger(WEBSOCKET_LOG, 'Starting websocket server');
+        exec('/usr/bin/php ' . ABSOLUTE_PATH . 'websocket.php >/dev/null 2>&1 &');
+    }
+}
 
 //-- DOWNLOAD SCANNERS
-if (apiRequestLocal('database/settings')['securityEnabled'] && $name == 'dockwatch') {
-    file_put_contents(DOWNLOAD_SCANNERS_FILE, '');
-} else {
-    unlink(DOWNLOAD_SCANNERS_FILE);
+if (!IS_MAINTENANCE && apiRequestLocal('database/settings')['securityEnabled'] && $name == 'dockwatch') {
+    setFile(DOWNLOAD_SCANNERS_FILE, ['downloaded' => date('c')]);
+} elseif (is_file(DOWNLOAD_SCANNERS_FILE)) {
+    deleteFile(DOWNLOAD_SCANNERS_FILE);
 }
 
 //-- MAINTENANCE CHECK
 $maintenance->startup();
 
-logger(STARTUP_LOG, 'Container init (Start/Restart) <-');
+logger(STARTUP_LOG, 'Container init (Start/Restart) <-', 'shell');

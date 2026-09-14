@@ -24,7 +24,7 @@ function getExpandedProcessList($fetchProc, $fetchStats, $fetchInspect, $mainten
         if ($maintenance) {
             logger(MAINTENANCE_LOG, 'dockerProcessList ->');
             $processList = $docker->processList(false);
-            logger(MAINTENANCE_LOG, json_encode(json_decode($processList)));
+            logger(MAINTENANCE_LOG, json_encode(json_decode($processList)), 'debug');
             $processList = json_decode($processList, true);
             logger(MAINTENANCE_LOG, 'dockerProcessList <-');
         } else {
@@ -37,7 +37,7 @@ function getExpandedProcessList($fetchProc, $fetchStats, $fetchInspect, $mainten
         if ($maintenance) {
             logger(MAINTENANCE_LOG, 'dockerImageSizes ->');
             $imageSizes = $docker->getImageSizes();
-            logger(MAINTENANCE_LOG, json_encode(json_decode($imageSizes)));
+            logger(MAINTENANCE_LOG, json_encode(json_decode($imageSizes)), 'debug');
             $imageSizes = json_decode($imageSizes, true);
             logger(MAINTENANCE_LOG, 'dockerImageSizes <-');
         } else {
@@ -53,7 +53,7 @@ function getExpandedProcessList($fetchProc, $fetchStats, $fetchInspect, $mainten
         if ($maintenance) {
             logger(MAINTENANCE_LOG, 'dockerStats ->');
             $dockerStats = getFile(STATS_FILE);
-            logger(MAINTENANCE_LOG, json_encode($dockerStats, JSON_UNESCAPED_SLASHES));
+            logger(MAINTENANCE_LOG, json_encode($dockerStats, JSON_UNESCAPED_SLASHES), 'debug');
             logger(MAINTENANCE_LOG, 'dockerStats <-');
         } else {
             $dockerStats = apiRequest('file/stats')['result'];
@@ -62,7 +62,7 @@ function getExpandedProcessList($fetchProc, $fetchStats, $fetchInspect, $mainten
         if (!$dockerStats) { //-- NOT WRITTEN YET
             if ($maintenance) {
                 $dockerStats = $docker->stats(false);
-                logger(MAINTENANCE_LOG, $dockerStats);
+                logger(MAINTENANCE_LOG, $dockerStats, 'debug');
                 $dockerStats = json_decode($dockerStats, true);
             } else {
                 $dockerStats = apiRequest('docker/stats', $_GET)['result'];
@@ -87,7 +87,7 @@ function getExpandedProcessList($fetchProc, $fetchStats, $fetchInspect, $mainten
                 logger(MAINTENANCE_LOG, 'inspecting: ' . implode(' ', $inspectContainers));
                 $inspect        = $docker->inspect(implode(' ', $inspectContainers));
                 $inspectResults = json_decode($inspect, true);
-                logger(MAINTENANCE_LOG, '$docker->inspect ' . json_encode(json_decode($inspect)));
+                logger(MAINTENANCE_LOG, '$docker->inspect ' . json_encode(json_decode($inspect)), 'debug');
                 logger(MAINTENANCE_LOG, 'dockerInspect <-');
             } else {
                 $inspect        = apiRequest('docker/container/inspect', ['name' => implode(' ', $inspectContainers), 'format' => true])['result'];
@@ -163,7 +163,7 @@ function dockerPermissionCheck()
 {
     logger(UI_LOG, 'dockerPermissionCheck ->');
     $apiRequest = apiRequest('docker/processList', ['format' => true]);
-    logger(UI_LOG, '$apiRequest: ' . json_encode($apiRequest));
+    logger(UI_LOG, '$apiRequest: ' . json_encode($apiRequest), 'debug');
     logger(UI_LOG, 'dockerPermissionCheck <-');
 
     return empty(json_decode($apiRequest['result'], true)) ? false : true;
@@ -177,36 +177,6 @@ function dockerCreateContainer($inspect)
     $apiRequest = $docker->apiCurl($create, 'post');
 
     return $apiRequest;
-}
-
-function dockerAutoCompose($containerName)
-{
-    global $shell, $phiki;
-
-    $cmd     = sprintf(DockerSock::RUN, '--rm -v /var/run/docker.sock:/var/run/docker.sock ghcr.io/red5d/docker-autocompose ' . $shell->prepare($containerName));
-    $compose = $shell->exec($cmd . ' 2>&1');
-    $lines   = explode("\n", $compose);
-    $compose = [];
-    $skip    = true; //-- IGNORE ALL THE IMAGE PULL NOISE
-
-    //-- LOOP THIS SO IT REMOVES ALL THE ADD CONTAINER OVERHEAD
-    foreach ($lines as $line) {
-
-        //-- OBSOLETE VERSIONING LINE
-        if (str_contains($line, 'version:')) {
-            continue;
-        }
-
-        if (str_contains($line, 'networks:') || str_contains($line, 'services:')) {
-            $skip = false;
-        }
-
-        if (!$skip && trim($line)) {
-            $compose[] = $line;
-        }
-    }
-
-    return $cmd . '<hr>' . $phiki->codeToHtml(implode("\n", $compose), Phiki\Grammar\Grammar::Yaml, Phiki\Theme\Theme::GithubDark);
 }
 
 function dockerAutoRun($container)

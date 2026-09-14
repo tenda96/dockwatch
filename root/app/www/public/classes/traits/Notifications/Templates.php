@@ -64,12 +64,30 @@ trait NotificationTemplates
                     'event'      => '',
                     'changed'    => '',
                     'containers' => '',
+                    'total'      => '',
+                    'running'    => '',
                     'critical'   => '',
                     'high'       => '',
                     'medium'     => '',
                     'low'        => '',
                     'unknown'    => '',
                     'details'    => ''
+                ];
+            case 'intrusion':
+                return [
+                    'event'     => '',
+                    'type'      => '',
+                    'time'      => '',
+                    'ip'        => '',
+                    'method'    => '',
+                    'uri'       => '',
+                    'referrer'  => '',
+                    'userAgent' => '',
+                    'username'  => '',
+                    'apikey'    => '',
+                    'container' => '',
+                    'token'     => '',
+                    'details'   => ''
                 ];
             default:
                 return [];
