@@ -185,35 +185,10 @@ function freshStartMigration()
     $.ajax({
         type: 'POST',
         url: 'ajax/settings.php',
-        data: '&m=updateSetting&setting=migration&value=022',
+        data: '&m=updateSetting&setting=migration&value=-1',
         success: function () {
-            $('#globalSetting-migration').val('022');
-            toast('Settings', 'Migration set to 022, restart the container to apply the migration', 'success');
+            toast('Settings', 'Migration set to -1. Restart the container to drop and rebuild the database', 'success');
             initPage('settings');
-        }
-    });
-}
-// ---------------------------------------------------------------------------------------------
-function backupDatabase()
-{
-    pageLoadingStart();
-
-    $.ajax({
-        type: 'POST',
-        url: 'ajax/database.php',
-        data: '&m=backup',
-        dataType: 'json',
-        success: function (resultData) {
-            pageLoadingStop();
-            if (resultData.error) {
-                toast('Database backup', resultData.error, 'error');
-            } else {
-                toast('Database backup', 'Backup written to ' + resultData.path, 'success');
-            }
-        },
-        error: function () {
-            pageLoadingStop();
-            toast('Database backup', 'Request failed', 'error');
         }
     });
 }
